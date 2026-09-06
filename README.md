@@ -1,6 +1,6 @@
-# 🚦 Smart Traffic Management System
+#  Smart Traffic Management System
 
-## 📌 Overview
+##  Overview
 
 The **Smart Traffic Management System for Urban Congestion Using AI, IoT, and Intelligent Traffic Signal Optimization** is a Software Engineering project designed to improve urban traffic management through real-time traffic monitoring and intelligent decision-making.
 
@@ -8,7 +8,7 @@ The system collects traffic information from sources such as traffic sensors, GP
 
 ---
 
-## 🎯 Project Vision
+##  Project Vision
 
 To develop an intelligent and scalable traffic management platform that uses AI and IoT technologies to monitor real-time traffic conditions, optimize signal timings, reduce congestion, prioritize emergency vehicles, and provide route recommendations.
 
@@ -16,22 +16,22 @@ The system aims to support traffic authorities and citizens through data-driven 
 
 ---
 
-## ✨ Key Features
+##  Key Features
 
-- 🚦 Dynamic traffic signal optimization based on traffic density
-- 🚑 Emergency vehicle prioritization through green corridor creation
-- 🚨 Real-time congestion, accident, and road blockage detection
-- 🗺️ Alternate route recommendations for commuters
-- 👥 Role-based dashboards for different users
-- 🔔 Traffic alerts and notifications
-- 📊 Traffic analytics and report generation
-- 💾 Historical traffic data management
+-  Dynamic traffic signal optimization based on traffic density
+-  Emergency vehicle prioritization through green corridor creation
+-  Real-time congestion, accident, and road blockage detection
+-  Alternate route recommendations for commuters
+-  Role-based dashboards for different users
+-  Traffic alerts and notifications
+-  Traffic analytics and report generation
+-  Historical traffic data management
 
 ---
 
-## 👥 System Users
+##  System Users
 
-### 👨‍💻 Admin
+###  Admin
 
 The Admin manages important system-level operations.
 
@@ -40,7 +40,7 @@ The Admin manages important system-level operations.
 - Generate reports
 - View system analytics
 
-### 🏢 Traffic Authority
+###  Traffic Authority
 
 The Traffic Authority monitors and manages traffic conditions.
 
@@ -49,14 +49,14 @@ The Traffic Authority monitors and manages traffic conditions.
 - Optimize traffic signal timings
 - Generate traffic reports
 
-### 👮 Traffic Police
+###  Traffic Police
 
 Traffic Police monitor traffic conditions and receive important notifications.
 
 - Monitor traffic
 - Receive traffic alerts and notifications
 
-### 🚑 Emergency Service
+###  Emergency Service
 
 Emergency services can request traffic priority for emergency vehicles.
 
@@ -64,7 +64,7 @@ Emergency services can request traffic priority for emergency vehicles.
 - Create green corridors
 - Receive traffic alerts and notifications
 
-### 🚗 Citizen
+###  Citizen
 
 Citizens can access traffic information and report incidents.
 
@@ -75,7 +75,7 @@ Citizens can access traffic information and report incidents.
 
 ---
 
-## 🔄 System Workflow
+##  System Workflow
 
 ```text
 Traffic Data Sources
