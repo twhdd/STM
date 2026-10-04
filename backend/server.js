@@ -16,6 +16,7 @@ const routeRecommendationRoutes = require("./routes/routeRecommendationRoutes");
 const trafficAlertRoutes = require("./routes/trafficAlertRoutes");
 const trafficAnalyticsRoutes = require("./routes/trafficAnalyticsRoutes");
 const congestionEventRoutes = require("./routes/congestionEventRoutes");
+const citizenReportRoutes = require("./routes/citizenReportRoutes");
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -65,6 +66,9 @@ app.use("/api/traffic-analytics", trafficAnalyticsRoutes);
 
 // Congestion event routes
 app.use("/api/congestion-events", congestionEventRoutes);
+
+// Citizen report routes
+app.use("/api/citizen-reports", citizenReportRoutes);
 
 // Root endpoint
 app.get("/", (req, res) => {
