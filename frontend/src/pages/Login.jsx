@@ -3,7 +3,7 @@ import { useNavigate, useLocation, Navigate } from "react-router-dom";
 import { useAuth } from "../context/useAuth";
 
 export function Login() {
-  const { login, isAuthenticated } = useAuth();
+  const { login, isAuthenticated, loading } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
 
@@ -12,12 +12,20 @@ export function Login() {
   const [errorMessage, setErrorMessage] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
 
-  // If already logged in, redirect to intended page or dashboard
-  if (isAuthenticated) {
-    return <Navigate to="/" replace />;
+  const from = location.state?.from || "/";
+
+  if (loading) {
+    return (
+      <div className="auth-loading-screen">
+        <div className="auth-loading-spinner"></div>
+        <p>Loading STM Portal...</p>
+      </div>
+    );
   }
 
-  const from = location.state?.from?.pathname || "/";
+  if (isAuthenticated) {
+    return <Navigate to={from} replace />;
+  }
 
   const handleSubmit = async (e) => {
     e.preventDefault();
