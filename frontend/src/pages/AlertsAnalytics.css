@@ -1,0 +1,161 @@
+.alerts-analytics-header {
+  gap: 18px;
+}
+
+.alerts-analytics-header .btn-refresh:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.alerts-analytics-stats {
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+}
+
+.alerts-analytics-stats .stat-icon-wrapper {
+  font-size: 20px;
+  font-weight: 700;
+}
+
+.traffic-distribution-card,
+.alerts-list-card,
+.generate-alert-card {
+  margin-bottom: 20px;
+}
+
+.traffic-distribution-list {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.traffic-distribution-row {
+  display: grid;
+  grid-template-columns: minmax(125px, 170px) minmax(0, 1fr);
+  align-items: center;
+  gap: 16px;
+}
+
+.traffic-distribution-label {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.traffic-distribution-label strong {
+  font-size: 14px;
+}
+
+.traffic-distribution-track {
+  width: 100%;
+  height: 12px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--bg-subtle);
+}
+
+.traffic-distribution-bar {
+  display: block;
+  height: 100%;
+  min-width: 0;
+  border-radius: inherit;
+  transition: width 0.2s ease;
+}
+
+.density-low {
+  background: var(--color-success);
+}
+
+.density-medium {
+  background: var(--color-info);
+}
+
+.density-high {
+  background: var(--color-warning);
+}
+
+.density-severe {
+  background: var(--color-danger);
+}
+
+.alerts-data-table {
+  min-width: 860px;
+}
+
+.alerts-data-table td {
+  vertical-align: top;
+}
+
+.alerts-data-table td:first-child {
+  min-width: 200px;
+  max-width: 320px;
+}
+
+.alert-message {
+  display: block;
+  margin-top: 4px;
+  overflow-wrap: anywhere;
+}
+
+.generate-alert-form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+  gap: 14px;
+}
+
+.generate-alert-form .form-group {
+  min-width: 0;
+}
+
+.generate-alert-form .form-input {
+  min-width: 0;
+}
+
+.generate-alert-form .btn-primary {
+  min-height: 42px;
+  white-space: nowrap;
+}
+
+.generation-feedback {
+  margin-top: 16px;
+  margin-bottom: 0;
+}
+
+.generate-alert-card .alert-warning {
+  background-color: var(--color-warning-light);
+  border: 1px solid #fde68a;
+  color: #92400e;
+}
+
+.generate-alert-card .alert-success {
+  background-color: var(--color-success-light);
+  border: 1px solid #a7f3d0;
+  color: #065f46;
+}
+
+.generate-alert-card .alert-info {
+  background-color: var(--color-info-light);
+  border: 1px solid #a5f3fc;
+  color: #155e75;
+}
+
+@media (max-width: 640px) {
+  .alerts-analytics-header {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .traffic-distribution-row {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 8px;
+  }
+
+  .generate-alert-form {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .generate-alert-form .btn-primary {
+    width: 100%;
+  }
+}

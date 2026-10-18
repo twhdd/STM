@@ -57,7 +57,20 @@ const trafficAlertSchema = new mongoose.Schema(
       type: Date,
     },
   },
-  { timestamps: true }
+  { timestamps: true, autoIndex: false }
+);
+
+trafficAlertSchema.index(
+  { congestionEvent: 1 },
+  {
+    name: "active_congestion_alert_per_event",
+    unique: true,
+    partialFilterExpression: {
+      alertType: "CONGESTION",
+      status: "ACTIVE",
+      congestionEvent: { $type: "objectId" },
+    },
+  }
 );
 
 module.exports = mongoose.model("TrafficAlert", trafficAlertSchema);

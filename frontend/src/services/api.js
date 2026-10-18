@@ -110,7 +110,15 @@ async function request(endpoint, options = {}) {
       error.data = data;
 
       if (response.status === 401) {
+        // The session is invalid or expired: sign the user out.
+        error.isUnauthorized = true;
         notifyUnauthorized(token);
+      } else if (response.status === 403) {
+        // The session is valid but this role may not do this: do not sign out.
+        error.isForbidden = true;
+        if (!(data && typeof data === "object" && typeof data.message === "string")) {
+          error.message = "You do not have permission to perform this action.";
+        }
       }
 
       throw error;

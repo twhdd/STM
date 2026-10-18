@@ -29,13 +29,62 @@ function App() {
               </ProtectedRoute>
             }
           >
-            <Route index element={<Home />} />
-            <Route path="traffic-monitoring" element={<TrafficMonitoring />} />
-            <Route path="signal-optimization" element={<SignalOptimization />} />
-            <Route path="emergency-priority" element={<EmergencyPriority />} />
-            <Route path="route-recommendation" element={<RouteRecommendation />} />
-            <Route path="alerts-analytics" element={<AlertsAnalytics />} />
-            <Route path="citizen-reporting" element={<CitizenReporting />} />
+            <Route
+              index
+              element={
+                <ProtectedRoute requiredPage="dashboard">
+                  <Home />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="traffic-monitoring"
+              element={
+                <ProtectedRoute requiredPage="trafficMonitoring">
+                  <TrafficMonitoring />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="signal-optimization"
+              element={
+                <ProtectedRoute requiredPage="signalOptimization">
+                  <SignalOptimization />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="emergency-priority"
+              element={
+                <ProtectedRoute requiredPage="emergencyPriority">
+                  <EmergencyPriority />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="route-recommendation"
+              element={
+                <ProtectedRoute requiredPage="routeRecommendation">
+                  <RouteRecommendation />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="alerts-analytics"
+              element={
+                <ProtectedRoute requiredPage="alertsAnalytics">
+                  <AlertsAnalytics />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="citizen-reporting"
+              element={
+                <ProtectedRoute requiredPage="citizenReporting">
+                  <CitizenReporting />
+                </ProtectedRoute>
+              }
+            />
             <Route path="*" element={<NotFound />} />
           </Route>
         </Routes>

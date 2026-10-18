@@ -1,8 +1,19 @@
 const express = require("express");
+const http = require("node:http");
 const cors = require("cors");
+const mongoose = require("mongoose");
 require("dotenv").config();
 
 const connectDB = require("./config/database");
+const {
+  ensureCongestionLifecycleIndexes,
+} = require("./services/congestionLifecycleIndexService");
+const {
+  trafficMeasurementRecoveryWorker,
+} = require("./services/trafficMeasurementRecoveryWorker");
+const { trafficSimulator } = require("./services/trafficSimulatorService");
+const { realtimeService } = require("./services/realtimeService");
+const { createSocketServer } = require("./socket/socketServer");
 const authRoutes = require("./routes/authRoutes");
 const trafficLocationRoutes = require("./routes/trafficLocationRoutes");
 const monitoringDeviceRoutes = require("./routes/monitoringDeviceRoutes");
@@ -20,6 +31,8 @@ const citizenReportRoutes = require("./routes/citizenReportRoutes");
 
 const app = express();
 const PORT = process.env.PORT || 5000;
+let httpServer;
+let socketServer;
 
 // Middleware
 app.use(cors());
@@ -70,7 +83,7 @@ app.use("/api/congestion-events", congestionEventRoutes);
 // Citizen report routes
 app.use("/api/citizen-reports", citizenReportRoutes);
 
-// Root endpoint
+// Root endpoint (PUBLIC on purpose: static banner, no data; useful as a liveness probe)
 app.get("/", (req, res) => {
   res.json({
     message: "Smart Traffic Management System API",
@@ -78,7 +91,7 @@ app.get("/", (req, res) => {
   });
 });
 
-// Health check
+// Health check (PUBLIC on purpose: returns a fixed status object, no data, used by uptime checks)
 app.get("/api/health", (req, res) => {
   res.json({
     status: "OK",
@@ -87,12 +100,101 @@ app.get("/api/health", (req, res) => {
 });
 
 // Start server
-const startServer = async () => {
-  await connectDB();
+const startServer = async ({
+  port = PORT,
+  connectDatabase = connectDB,
+  ensureLifecycleIndexes = ensureCongestionLifecycleIndexes,
+  recoveryWorker = trafficMeasurementRecoveryWorker,
+  simulator = trafficSimulator,
+  socketServerFactory = createSocketServer,
+  realtime = realtimeService,
+  appInstance = app,
+  registerSignalHandlers = true,
+} = {}) => {
+  let shutdownPromise;
+  await connectDatabase();
+  await ensureLifecycleIndexes();
+  await recoveryWorker.start();
 
-  app.listen(PORT, () => {
-    console.log(`STM Backend running on http://localhost:${PORT}`);
+  httpServer = http.createServer(appInstance);
+  socketServer = socketServerFactory(httpServer);
+  realtime.attach(socketServer);
+
+  await new Promise((resolve, reject) => {
+    httpServer.once("error", reject);
+    httpServer.listen(port, () => {
+      httpServer.removeListener("error", reject);
+      console.log(`STM Backend running on http://localhost:${httpServer.address().port}`);
+      resolve();
+    });
   });
+
+  void simulator.start();
+
+  const shutdown = (signal = "shutdown") => {
+    if (shutdownPromise) return shutdownPromise;
+    shutdownPromise = (async () => {
+      console.log(`Received ${signal}; stopping STM services...`);
+      let shutdownError;
+      const attempt = async (operation) => {
+        try {
+          await operation();
+        } catch (error) {
+          shutdownError ||= error;
+        }
+      };
+
+      await attempt(() => simulator.stop());
+      if (socketServer) {
+        const closingSocketServer = socketServer;
+        await attempt(
+          () =>
+            new Promise((resolve, reject) =>
+              closingSocketServer.close((error) =>
+                error ? reject(error) : resolve()
+              )
+            )
+        );
+        realtime.detach(closingSocketServer);
+        socketServer = null;
+      } else if (httpServer?.listening) {
+        await attempt(
+          () =>
+            new Promise((resolve, reject) =>
+              httpServer.close((error) => (error ? reject(error) : resolve()))
+            )
+        );
+      }
+      await attempt(() => recoveryWorker.stop());
+      if (mongoose.connection.readyState !== 0) {
+        await attempt(() => mongoose.disconnect());
+      }
+      if (shutdownError) throw shutdownError;
+    })().catch((error) => {
+      console.error("STM shutdown failed:", error);
+      process.exitCode = 1;
+    });
+    return shutdownPromise;
+  };
+  if (registerSignalHandlers) {
+    process.once("SIGINT", () => shutdown("SIGINT"));
+    process.once("SIGTERM", () => shutdown("SIGTERM"));
+  }
+  return { httpServer, shutdown };
 };
 
-startServer();
+// Start listening only when run directly (node server.js); tests import the app
+if (require.main === module) {
+  startServer().catch(async (error) => {
+    console.error("STM startup failed:", error);
+    try {
+      await mongoose.disconnect();
+    } catch (disconnectError) {
+      console.error("STM startup cleanup failed:", disconnectError);
+    }
+    process.exitCode = 1;
+  });
+}
+
+module.exports = app;
+module.exports.startServer = startServer;

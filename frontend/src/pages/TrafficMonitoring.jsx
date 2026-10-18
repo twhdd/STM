@@ -1,5 +1,8 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import api from "../services/api";
+import { useAuth } from "../context/useAuth";
+import { hasRole, roleAccess } from "../config/roleAccess";
+import { REALTIME_EVENTS, subscribeToRealtimeEvents } from "../services/realtime";
 
 function formatDateTime(dateStr) {
   if (!dateStr) return "—";
@@ -20,13 +23,53 @@ function formatDateTime(dateStr) {
 }
 
 export function TrafficMonitoring() {
+  const { user, token } = useAuth();
+  const canViewDevices = hasRole(
+    user?.role,
+    roleAccess.endpoints.monitoringDevices
+  );
   const [locations, setLocations] = useState([]);
   const [devices, setDevices] = useState([]);
   const [measurements, setMeasurements] = useState([]);
   const [congestionEvents, setCongestionEvents] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+  const [feedErrors, setFeedErrors] = useState([]);
   const [refreshIndex, setRefreshIndex] = useState(0);
+  const [realtimeStatus, setRealtimeStatus] = useState("disconnected");
+  const realtimeRefreshTimer = useRef(null);
+
+  useEffect(() => {
+    if (!token) return undefined;
+
+    const handleRealtimeEvent = () => {
+      if (realtimeRefreshTimer.current) {
+        window.clearTimeout(realtimeRefreshTimer.current);
+      }
+      realtimeRefreshTimer.current = window.setTimeout(() => {
+        realtimeRefreshTimer.current = null;
+        setRefreshIndex((current) => current + 1);
+      }, 150);
+    };
+    const unsubscribe = subscribeToRealtimeEvents(
+      token,
+      [
+        REALTIME_EVENTS.MEASUREMENT_CREATED,
+        REALTIME_EVENTS.CONGESTION_DETECTED,
+        REALTIME_EVENTS.CONGESTION_CLEARED,
+      ],
+      handleRealtimeEvent,
+      setRealtimeStatus
+    );
+
+    return () => {
+      unsubscribe();
+      if (realtimeRefreshTimer.current) {
+        window.clearTimeout(realtimeRefreshTimer.current);
+        realtimeRefreshTimer.current = null;
+      }
+    };
+  }, [token]);
 
   useEffect(() => {
     let isCancelled = false;
@@ -36,12 +79,34 @@ export function TrafficMonitoring() {
         const [locationsRes, devicesRes, measurementsRes, eventsRes] =
           await Promise.allSettled([
             api.get("/traffic-locations"),
-            api.get("/monitoring-devices"),
+            canViewDevices ? api.get("/monitoring-devices") : Promise.resolve(null),
             api.get("/traffic-measurements"),
             api.get("/congestion-events"),
           ]);
 
         if (!isCancelled) {
+          const feedErrors = [
+            ["Traffic locations", locationsRes, "locations"],
+            ["Traffic measurements", measurementsRes, "measurements"],
+            ["Congestion events", eventsRes, "events"],
+          ].flatMap(([label, result, field]) => {
+            if (result.status === "rejected") {
+              return [`${label}: ${result.reason?.message || "Unable to load data."}`];
+            }
+            return Array.isArray(result.value?.[field])
+              ? []
+              : [`${label}: the server returned an invalid response.`];
+          });
+          if (canViewDevices) {
+            if (devicesRes.status === "rejected") {
+              feedErrors.push(
+                `Monitoring devices: ${devicesRes.reason?.message || "Unable to load data."}`
+              );
+            } else if (!Array.isArray(devicesRes.value?.devices)) {
+              feedErrors.push("Monitoring devices: the server returned an invalid response.");
+            }
+          }
+
           if (
             locationsRes.status === "fulfilled" &&
             Array.isArray(locationsRes.value?.locations)
@@ -52,6 +117,7 @@ export function TrafficMonitoring() {
           }
 
           if (
+            canViewDevices &&
             devicesRes.status === "fulfilled" &&
             Array.isArray(devicesRes.value?.devices)
           ) {
@@ -82,6 +148,7 @@ export function TrafficMonitoring() {
             setCongestionEvents([]);
           }
 
+          setFeedErrors(feedErrors);
           setError(null);
           setLoading(false);
         }
@@ -101,7 +168,7 @@ export function TrafficMonitoring() {
     return () => {
       isCancelled = true;
     };
-  }, [refreshIndex]);
+  }, [canViewDevices, refreshIndex]);
 
   const handleRefresh = () => {
     setLoading(true);
@@ -198,7 +265,29 @@ export function TrafficMonitoring() {
             <span>Refresh</span>
           </button>
         </div>
+        <p className="page-description" role="status" aria-live="polite">
+          {realtimeStatus === "connected"
+            ? "Live updates connected"
+            : realtimeStatus === "connecting"
+              ? "Connecting to live updates..."
+              : realtimeStatus === "reconnecting"
+                ? "Live updates disconnected; reconnecting..."
+                : realtimeStatus === "error"
+                  ? "Live updates unavailable; showing REST data."
+                  : "Live updates disconnected; showing REST data."}
+        </p>
       </div>
+
+      {feedErrors.length > 0 && (
+        <div className="alert-banner alert-danger" role="alert">
+          <div>
+            <strong>Some monitoring data could not be loaded.</strong>
+            <ul>
+              {feedErrors.map((feedError) => <li key={feedError}>{feedError}</li>)}
+            </ul>
+          </div>
+        </div>
+      )}
 
       {/* 2. Summary Cards */}
       <div className="stats-grid">
@@ -355,11 +444,17 @@ export function TrafficMonitoring() {
           <div className="card-header">
             <h3 className="card-title">Monitoring Devices</h3>
             <span className="card-subtitle">
-              {devices.length} registered hardware device(s)
+              {canViewDevices
+                ? `${devices.length} registered hardware device(s)`
+                : "Staff inventory"}
             </span>
           </div>
           <div className="card-body">
-            {devices.length === 0 ? (
+            {!canViewDevices ? (
+              <p className="empty-state-text">
+                Monitoring device inventory is available to staff roles only.
+              </p>
+            ) : devices.length === 0 ? (
               <p className="empty-state-text">No monitoring devices registered.</p>
             ) : (
               <div className="table-responsive">

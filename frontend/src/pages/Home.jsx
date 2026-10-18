@@ -8,6 +8,7 @@ export function Home() {
   const [congestionEvents, setCongestionEvents] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+  const [feedErrors, setFeedErrors] = useState([]);
   const [refreshIndex, setRefreshIndex] = useState(0);
 
   useEffect(() => {
@@ -23,6 +24,18 @@ export function Home() {
         ]);
 
         if (!isCancelled) {
+          const feedErrors = [
+            ["Traffic analytics", analyticsRes, (response) => Boolean(response?.analytics)],
+            ["Traffic locations", locationsRes, (response) => Array.isArray(response?.locations)],
+            ["Traffic alerts", alertsRes, (response) => Array.isArray(response?.alerts)],
+            ["Congestion events", eventsRes, (response) => Array.isArray(response?.events)],
+          ].flatMap(([label, result, isValid]) => {
+            if (result.status === "rejected") {
+              return [`${label}: ${result.reason?.message || "Unable to load data."}`];
+            }
+            return isValid(result.value) ? [] : [`${label}: the server returned an invalid response.`];
+          });
+
           if (analyticsRes.status === "fulfilled" && analyticsRes.value?.analytics) {
             setAnalytics(analyticsRes.value.analytics);
           } else {
@@ -47,6 +60,7 @@ export function Home() {
             setCongestionEvents([]);
           }
 
+          setFeedErrors(feedErrors);
           setError(null);
           setLoading(false);
         }
@@ -129,6 +143,20 @@ export function Home() {
           </button>
         </div>
       </div>
+
+      {feedErrors.length > 0 && (
+        <div className="alert-banner alert-danger" role="alert">
+          <div>
+            <strong>Some dashboard data could not be loaded.</strong>
+            <ul>
+              {feedErrors.map((feedError) => <li key={feedError}>{feedError}</li>)}
+            </ul>
+            <button type="button" className="btn-refresh" onClick={handleRefresh}>
+              Retry
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* KPI Metric Cards Grid */}
       <div className="stats-grid">

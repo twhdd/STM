@@ -1,0 +1,190 @@
+.emergency-priority-card {
+  max-width: 1100px;
+}
+
+.emergency-vehicle-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+  border: 0;
+  min-width: 0;
+}
+
+.emergency-vehicle-grid-legend {
+  grid-column: 1 / -1;
+  margin-bottom: 2px;
+  color: var(--text-secondary);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.emergency-vehicle-option {
+  display: flex;
+  gap: 12px;
+  min-width: 0;
+  padding: 18px;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-lg);
+  background: var(--bg-card);
+  cursor: pointer;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.emergency-vehicle-option:hover,
+.emergency-vehicle-option.is-selected {
+  border-color: var(--color-primary);
+  box-shadow: 0 0 0 1px var(--color-primary);
+}
+
+.emergency-vehicle-option input {
+  flex: 0 0 auto;
+  width: 16px;
+  height: 16px;
+  margin-top: 3px;
+  accent-color: var(--color-primary);
+}
+
+.emergency-vehicle-option-content {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 14px;
+  min-width: 0;
+}
+
+.emergency-vehicle-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+  min-width: 0;
+}
+
+.emergency-vehicle-heading > strong {
+  font-size: 16px;
+  overflow-wrap: anywhere;
+}
+
+.emergency-priority-badge {
+  flex: 0 0 auto;
+  padding: 4px 8px;
+  border-radius: 999px;
+  background: var(--bg-subtle);
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.emergency-priority-badge.is-active {
+  background: var(--color-success-light);
+  color: #047857;
+}
+
+.emergency-vehicle-details {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  min-width: 0;
+}
+
+.emergency-vehicle-details > span,
+.emergency-priority-result-grid > div {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.emergency-vehicle-location {
+  grid-column: 1 / -1;
+}
+
+.emergency-vehicle-detail-label {
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.emergency-vehicle-details strong,
+.emergency-priority-result-grid strong,
+.emergency-priority-result-grid span:not(.emergency-vehicle-detail-label) {
+  color: var(--text-primary);
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
+.emergency-priority-actions {
+  margin-top: 18px;
+}
+
+.emergency-priority-feedback,
+.emergency-priority-result {
+  margin-top: 18px;
+  margin-bottom: 0;
+}
+
+.emergency-priority-card .alert-warning {
+  background-color: var(--color-warning-light);
+  border: 1px solid #fde68a;
+  color: #92400e;
+}
+
+.emergency-priority-result {
+  align-items: flex-start;
+  background-color: var(--color-success-light);
+  border: 1px solid #a7f3d0;
+  color: #065f46;
+}
+
+.emergency-priority-result-content {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  width: 100%;
+}
+
+.emergency-priority-result-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 18px;
+}
+
+.emergency-priority-empty {
+  padding: 18px 4px;
+}
+
+.emergency-priority-empty h3 {
+  margin-bottom: 6px;
+  font-size: 16px;
+}
+
+.emergency-priority-empty p {
+  color: var(--text-muted);
+}
+
+@media (max-width: 760px) {
+  .emergency-vehicle-grid,
+  .emergency-priority-result-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 480px) {
+  .emergency-vehicle-heading {
+    flex-direction: column;
+  }
+
+  .emergency-vehicle-details {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .emergency-vehicle-location {
+    grid-column: auto;
+  }
+
+  .emergency-priority-actions .btn-primary {
+    width: 100%;
+  }
+}

@@ -139,7 +139,7 @@ STM
     └── Traffic simulation components
 ```
 
-> **Note:** `ai-service` and `simulator` are currently reserved for further development and are not yet part of the tracked implementation.
+> **Note:** `ai-service` is reserved for further development. A development-only backend traffic simulator is documented below.
 
 ---
 
@@ -273,6 +273,100 @@ Then run:
 ```bash
 npm start
 ```
+
+### Development Role-Test Accounts
+
+The backend provides an opt-in seed command for local role-based frontend testing. It only runs with `NODE_ENV=development`, requires explicit confirmation, and only connects when `STM_TEST_DATABASE_NAME` (which must contain `test`) matches the database in `MONGO_URI`. Use a dedicated test database, never a shared or production database.
+
+From `backend/` in PowerShell, point the seed at a dedicated local test database and enter a password at the hidden prompt:
+
+```powershell
+$env:NODE_ENV = "development"
+$env:MONGO_URI = "mongodb://127.0.0.1:27017/stm_role_test"
+$env:STM_TEST_DATABASE_NAME = "stm_role_test"
+$env:STM_TEST_ACCOUNTS_CONFIRM = "YES"
+$secret = Read-Host "Test account password" -AsSecureString
+$env:STM_TEST_ACCOUNT_PASSWORD = [System.Net.NetworkCredential]::new("", $secret).Password
+npm run seed:test-accounts
+Remove-Item Env:STM_TEST_ACCOUNT_PASSWORD, Env:STM_TEST_ACCOUNTS_CONFIRM
+```
+
+`JWT_SECRET` must also be configured for login verification (the backend `.env` may provide it). The password must be at least 16 characters and include lowercase, uppercase, numeric, and symbol characters. The seed uses the existing bcrypt hashing cost, retains existing accounts and passwords, refuses role conflicts, and verifies all five accounts through the local login endpoint without displaying credentials or tokens.
+
+### STM Test Traffic Data
+
+To seed repeatable traffic data into the dedicated `stm_test` database, run from `backend/` in PowerShell. The script requires the explicit development, target-database, and confirmation settings below. `MONGO_URI` must point at the intended test cluster; if its URI path names a database, it must be `stm_test`. Without a database path, the script passes `stm_test` explicitly as Mongoose's `dbName`. The five existing test accounts must already exist with their intended roles; this command does not create or modify accounts.
+
+```powershell
+$env:NODE_ENV = "development"
+$env:STM_TEST_DATABASE_NAME = "stm_test"
+$env:STM_TEST_DATA_CONFIRM = "YES"
+npm run seed:test-data
+Remove-Item Env:STM_TEST_DATA_CONFIRM
+```
+
+It idempotently creates or updates the seed-owned locations, signals, monitoring devices, measurements, congestion events, routes, emergency vehicles, alerts, and two citizen reports. Repeated runs preserve operational state such as signal timing, emergency-priority activation, resolved alerts/events, and report review status. It does not delete records or drop/reset collections.
+
+### Traffic-Processing MongoDB Integration Tests
+
+The opt-in traffic-processing integration suite can use a dedicated test database name instead of the shared `stm_test`. The configured name must be a valid MongoDB database name containing `test` as a segment (for example, `stm_congestion_it_test`) and must not contain a `prod`, `production`, `live`, or `staging` segment. If `MONGO_URI` includes a database path, that path must exactly match `STM_TEST_DATABASE_NAME`; when it has no database path, Mongoose selects the configured name explicitly.
+
+Before running the suite, provision a separate, empty test database on the intended non-production MongoDB cluster. Do not use the existing `stm_test` database: its historical active congestion events conflict with the lifecycle uniqueness preflight. The test runner verifies the connected database name before creating lifecycle indexes or running any test writes. It preserves the preflight and stops without changing records if conflicting active events or alerts already exist. The suite does not seed data or migrate existing records; its own fixtures use unique identifiers and are cleaned up by the tests, except simulator history, which is intentionally retained.
+
+Provision/verify the dedicated database on a non-production cluster first. From `backend/` in PowerShell, set `MONGO_URI` to that cluster (for example, for a local MongoDB instance use `mongodb://127.0.0.1:27017/stm_congestion_it_test`; for a remote cluster use its dedicated test URI with the matching database path, or no path). Ensure `JWT_SECRET` is configured, then run:
+
+```powershell
+$env:MONGO_URI = "mongodb://127.0.0.1:27017/stm_congestion_it_test"
+$env:NODE_ENV = "development"
+$env:STM_TEST_DATABASE_NAME = "stm_congestion_it_test"
+$env:STM_TEST_DATA_CONFIRM = "YES"
+$env:STM_RUN_TRAFFIC_PROCESSING_INTEGRATION = "YES"
+node --test tests/trafficMeasurementProcessing.integration.test.js
+Remove-Item Env:STM_RUN_TRAFFIC_PROCESSING_INTEGRATION, Env:STM_TEST_DATA_CONFIRM
+```
+
+The integration opt-in and confirmation are both required. The worker processes used by the cross-process concurrency test inherit the same guarded environment, validate it independently, connect to that same configured database, and verify the connected database name before processing.
+
+### Development Traffic Simulator
+
+The backend includes an opt-in traffic simulator for development. It generates clearly labeled simulated measurements using the same ingestion, congestion-detection, and alert-processing pipeline as submitted measurements. Simulator measurements have `source: "SIMULATOR"`; measurements submitted through the existing API default to `source: "API"` (this source label does not assert that data is verified live traffic). The simulator creates uniquely named simulator locations and monitoring devices and does not modify existing traffic records. Simulator history and its owned location/device records are retained when the process stops.
+
+The simulator is disabled by default. From `backend/` in PowerShell, configure a development database before opting in:
+
+```powershell
+$env:NODE_ENV = "development"
+$env:MONGO_URI = "mongodb://127.0.0.1:27017/stm_test"
+$env:STM_TEST_DATABASE_NAME = "stm_test"
+$env:STM_TEST_DATA_CONFIRM = "YES"
+$env:STM_TRAFFIC_SIMULATOR_ENABLED = "YES"
+$env:STM_TRAFFIC_SIMULATOR_INTERVAL_MS = "15000"
+$env:STM_TRAFFIC_SIMULATOR_DEVICE_COUNT = "3"
+$env:STM_TRAFFIC_SIMULATOR_PATTERNS = "normal,moderate,heavy,burst"
+$env:STM_TRAFFIC_SIMULATOR_SEED = "12345"
+npm run dev
+```
+
+Only `NODE_ENV=development` and `STM_TRAFFIC_SIMULATOR_ENABLED=YES` enable it. Before writing, the simulator also requires `STM_TEST_DATA_CONFIRM=YES`, a safe test database name in `STM_TEST_DATABASE_NAME`, a valid MongoDB URI whose optional database path matches that name, and a connected database with the same name. Use a dedicated test cluster; the application can verify the database name but cannot independently identify whether a MongoDB host is production. The optional interval must be at least 1000 ms, device count must be 1–20, and patterns may be any comma-separated selection of `normal`, `moderate`, `heavy`, and `burst`. Set a numeric seed for repeatable sequences; without one, runtime randomness is used. This is generated test data, not a live traffic feed. Stop the backend normally to stop generation; no public start/stop endpoint exists, and simulator history is retained.
+
+### Real-Time Dashboard Updates
+
+The backend Socket.IO connection uses the existing `HS256` JWT session: the frontend sends its current token in the Socket.IO authentication handshake, not in the URL. Connections with missing, invalid, or unknown-role tokens are rejected. Authenticated users receive measurement, congestion, and alert lifecycle notifications, matching the authenticated read access of the existing traffic and alert APIs. Payloads contain only traffic/event identifiers and operational fields, not credentials or user profile data. Traffic Monitoring and Alerts & Analytics continue to load through REST first and refresh those feeds when notifications arrive; REST remains available when the socket is disconnected.
+
+Congestion episodes are tracked per location. A `HIGH` or `SEVERE` measurement creates an event and alert only when no active episode exists at that location. Further high/severe readings reuse the active event. A `LOW` or `MEDIUM` reading clears all active events at that location and resolves their active alerts with the same `resolvedAt` timestamp. A later high/severe reading starts a new episode. These transitions emit `congestion-detected`, `alert-created`, `congestion-cleared`, and `alert-resolved` only after the corresponding document saves succeed. Processing is serialized per location and per alert event within one backend process. MongoDB partial unique indexes enforce at most one active congestion event per location and one active congestion alert per congestion event across backend processes; duplicate-key races return the winning record without publishing a second creation notification.
+
+The two lifecycle indexes are created explicitly during backend startup after a read-only scan for conflicting active records. Mongoose automatic index creation is disabled for these models so an index cannot be built before the conflict scan. If existing duplicates are found, startup logs the affected location/event IDs and sample record IDs, creates neither index, and stops; it does not delete, resolve, or overwrite records. Review and reconcile such records through an explicit operator-reviewed data migration before restarting.
+
+These unique indexes require the congestion-event and traffic-alert collections to be unsharded, or for the deployment's shard keys to be compatible with MongoDB's unique-index requirements. If MongoDB rejects index creation, startup fails closed and logs the error; verify the collection sharding/index constraints before allowing traffic processing.
+
+### Durable Traffic-Measurement Processing Recovery
+
+Each newly persisted measurement is created with internal processing state `PENDING`; older measurements without this metadata are not automatically reprocessed. The initial processing attempt still runs synchronously after measurement persistence, and the API keeps its existing success response for a saved measurement even when processing fails. Internal queue metadata is omitted from normal measurement API serialization.
+
+The durable states are `PENDING` → `PROCESSING` → `COMPLETED`, with failures moving through `RETRY` back to `PROCESSING`, or to retained terminal `FAILED` after eight attempts. A job records its attempt count, next retry time, lease token/expiry, last completed stage, event/alert references, and a bounded error summary. Retries use exponential backoff starting at one second, capped at five minutes, with jitter. A periodic worker claims bounded batches using MongoDB updates. Expired processing leases are eligible for recovery after restart. The worker creates the processing-queue index only after the database connection and congestion lifecycle index preflight succeed.
+
+Measurements are ordered by persistence timestamp and ID within each location. A durable per-location lease serializes work across backend processes; a future-due retry at the head of a location's queue blocks newer measurements at that location, while other locations can continue. Processing checkpoints allow recovery after event or alert persistence without intentionally creating a second active event/alert. Existing partial unique indexes and duplicate-key winner handling remain the final cross-process safeguards. On graceful shutdown the worker stops polling and drains active operations; after an abrupt process exit, recovery waits for the lease to expire.
+
+Operational state is retained on the measurement documents but is not currently exposed through a management API or dashboard. Operators can inspect the `processing.status`, `processing.attempts`, `processing.nextAttemptAt`, and `processing.lastError` fields using approved database access. `FAILED` jobs are retained for investigation; there is no automatic or public replay endpoint. Socket.IO remains best-effort: a process crash after a persisted lifecycle change but before publication can still result in a missed live notification, although REST reads reflect the stored state. Lease expiry also has the usual distributed-worker limitation if a worker becomes unresponsive beyond its lease while still executing; the heartbeat reduces but does not eliminate that risk.
 
 ### Frontend Setup
 

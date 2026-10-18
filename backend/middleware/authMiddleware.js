@@ -1,4 +1,24 @@
 const jwt = require("jsonwebtoken");
+const User = require("../models/User");
+
+const validRoles = User.schema.path("role").enumValues;
+
+const verifyAccessToken = (token) => {
+    const decoded = jwt.verify(
+        token,
+        process.env.JWT_SECRET,
+        { algorithms: ["HS256"] }
+    );
+
+    if (!decoded.userId || !validRoles.includes(decoded.role)) {
+        throw new Error("Invalid or expired token");
+    }
+
+    return {
+        userId: decoded.userId,
+        role: decoded.role
+    };
+};
 
 const authenticateToken = (req, res, next) => {
     try {
@@ -22,15 +42,7 @@ const authenticateToken = (req, res, next) => {
 
         const token = parts[1];
 
-        const decoded = jwt.verify(
-            token,
-            process.env.JWT_SECRET
-        );
-
-        req.user = {
-            userId: decoded.userId,
-            role: decoded.role
-        };
+        req.user = verifyAccessToken(token);
 
         next();
 
@@ -67,5 +79,6 @@ const authorizeRoles = (...allowedRoles) => {
 
 module.exports = {
     authenticateToken,
-    authorizeRoles
+    authorizeRoles,
+    verifyAccessToken
 };

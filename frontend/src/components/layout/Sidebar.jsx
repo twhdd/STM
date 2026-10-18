@@ -1,8 +1,11 @@
 import { NavLink } from "react-router-dom";
+import { useAuth } from "../../context/useAuth";
+import { canAccessPage } from "../../config/roleAccess";
 
 const navItems = [
   {
     to: "/",
+    page: "dashboard",
     label: "Dashboard",
     icon: (
       <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -16,6 +19,7 @@ const navItems = [
   },
   {
     to: "/traffic-monitoring",
+    page: "trafficMonitoring",
     label: "Traffic Monitoring",
     icon: (
       <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -27,6 +31,7 @@ const navItems = [
   },
   {
     to: "/signal-optimization",
+    page: "signalOptimization",
     label: "Signal Optimization",
     icon: (
       <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -39,6 +44,7 @@ const navItems = [
   },
   {
     to: "/emergency-priority",
+    page: "emergencyPriority",
     label: "Emergency Priority",
     icon: (
       <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -51,6 +57,7 @@ const navItems = [
   },
   {
     to: "/route-recommendation",
+    page: "routeRecommendation",
     label: "Route Recommendation",
     icon: (
       <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -62,6 +69,7 @@ const navItems = [
   },
   {
     to: "/alerts-analytics",
+    page: "alertsAnalytics",
     label: "Alerts & Analytics",
     icon: (
       <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -72,6 +80,7 @@ const navItems = [
   },
   {
     to: "/citizen-reporting",
+    page: "citizenReporting",
     label: "Citizen Reporting",
     icon: (
       <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -84,6 +93,11 @@ const navItems = [
 ];
 
 export function Sidebar() {
+  const { user } = useAuth();
+  const visibleNavItems = navItems.filter((item) =>
+    canAccessPage(user?.role, item.page)
+  );
+
   return (
     <aside className="sidebar">
       <div className="sidebar-header">
@@ -96,7 +110,7 @@ export function Sidebar() {
 
       <nav className="sidebar-nav">
         <span className="nav-section-title">Navigation</span>
-        {navItems.map((item) => (
+        {visibleNavItems.map((item) => (
           <NavLink
             key={item.to}
             to={item.to}

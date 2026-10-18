@@ -1,0 +1,75 @@
+.signal-optimization-card {
+  max-width: 900px;
+}
+
+.signal-optimization-form {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 20px;
+}
+
+.signal-optimization-form .form-group {
+  min-width: 0;
+}
+
+.signal-optimization-form .form-input {
+  min-width: 0;
+}
+
+.signal-optimization-hint {
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.signal-optimization-actions,
+.signal-optimization-feedback {
+  grid-column: 1 / -1;
+}
+
+.signal-optimization-actions {
+  display: flex;
+  justify-content: flex-start;
+}
+
+.signal-optimization-feedback,
+.signal-optimization-result {
+  margin-bottom: 0;
+}
+
+.signal-optimization-card > .alert-banner {
+  margin-bottom: 18px;
+}
+
+.signal-optimization-card .alert-warning {
+  background-color: var(--color-warning-light);
+  border: 1px solid #fde68a;
+  color: #92400e;
+}
+
+.signal-optimization-result {
+  margin-top: 20px;
+  background-color: var(--color-success-light);
+  border: 1px solid #a7f3d0;
+  color: #065f46;
+}
+
+.signal-optimization-result p {
+  margin-top: 4px;
+}
+
+@media (max-width: 640px) {
+  .signal-optimization-form {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 16px;
+  }
+
+  .signal-optimization-actions,
+  .signal-optimization-feedback {
+    grid-column: auto;
+  }
+
+  .signal-optimization-actions .btn-primary {
+    width: 100%;
+  }
+}

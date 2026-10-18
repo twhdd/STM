@@ -1,6 +1,7 @@
 const TrafficMeasurement = require("../models/TrafficMeasurement");
 const MonitoringDevice = require("../models/MonitoringDevice");
 const TrafficLocation = require("../models/TrafficLocation");
+const trafficMeasurementIngestionService = require("../services/trafficMeasurementIngestionService");
 
 // Create a new traffic measurement
 const createTrafficMeasurement = async (req, res) => {
@@ -14,20 +15,20 @@ const createTrafficMeasurement = async (req, res) => {
       measuredAt,
     } = req.body;
 
-    const measurement = new TrafficMeasurement({
-      device,
-      location,
-      vehicleCount,
-      averageSpeed,
-      trafficDensity,
-      measuredAt,
-    });
-
-    const savedMeasurement = await measurement.save();
+    const { measurement: savedMeasurement, processing } =
+      await trafficMeasurementIngestionService.recordTrafficMeasurement({
+        device,
+        location,
+        vehicleCount,
+        averageSpeed,
+        trafficDensity,
+        measuredAt,
+      });
 
     res.status(201).json({
       message: "Traffic measurement recorded successfully",
       measurement: savedMeasurement,
+      processing,
     });
   } catch (error) {
     res.status(500).json({

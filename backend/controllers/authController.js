@@ -2,16 +2,19 @@ const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 const User = require("../models/User");
 
-// Register a new user
-const register = async (req, res) => {
+// Role given to every account created through public registration
+const PUBLIC_REGISTRATION_ROLE = "CITIZEN";
+
+// Create a user account with an already-authorized role
+const createAccount = async (req, res, role) => {
     try {
-        const { fullName, email, password, role } = req.body;
+        const { fullName, email, password } = req.body;
 
         // Check required fields
-        if (!fullName || !email || !password || !role) {
+        if (!fullName || !email || !password) {
             return res.status(400).json({
                 success: false,
-                message: "All fields are required"
+                message: "fullName, email and password are required"
             });
         }
 
@@ -58,6 +61,44 @@ const register = async (req, res) => {
 };
 
 
+// Public registration: always creates a CITIZEN account.
+// A client may not choose a privileged role.
+const register = async (req, res) => {
+    const requestedRole = req.body && req.body.role;
+
+    if (
+        requestedRole !== undefined &&
+        requestedRole !== null &&
+        requestedRole !== "" &&
+        requestedRole !== PUBLIC_REGISTRATION_ROLE
+    ) {
+        return res.status(403).json({
+            success: false,
+            message: `Public registration can only create ${PUBLIC_REGISTRATION_ROLE} accounts`
+        });
+    }
+
+    return createAccount(req, res, PUBLIC_REGISTRATION_ROLE);
+};
+
+
+// Authorized provisioning (ADMIN only, enforced in the route):
+// creates an account with any valid role, e.g. staff accounts.
+const createUser = async (req, res) => {
+    const requestedRole = req.body && req.body.role;
+    const validRoles = User.schema.path("role").enumValues;
+
+    if (!validRoles.includes(requestedRole)) {
+        return res.status(400).json({
+            success: false,
+            message: `role must be one of: ${validRoles.join(", ")}`
+        });
+    }
+
+    return createAccount(req, res, requestedRole);
+};
+
+
 // Login
 const login = async (req, res) => {
     try {
@@ -87,6 +128,13 @@ const login = async (req, res) => {
         );
 
         if (!passwordMatch) {
+            return res.status(401).json({
+                success: false,
+                message: "Invalid email or password"
+            });
+        }
+
+        if (!User.schema.path("role").enumValues.includes(user.role)) {
             return res.status(401).json({
                 success: false,
                 message: "Invalid email or password"
@@ -129,5 +177,6 @@ const login = async (req, res) => {
 
 module.exports = {
     register,
+    createUser,
     login
 };

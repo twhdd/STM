@@ -54,6 +54,19 @@ const congestionEventSchema = new mongoose.Schema(
   },
   {
     timestamps: true,
+    autoIndex: false,
+  }
+);
+
+congestionEventSchema.index(
+  { location: 1 },
+  {
+    name: "active_congestion_event_per_location",
+    unique: true,
+    partialFilterExpression: {
+      status: "ACTIVE",
+      location: { $type: "objectId" },
+    },
   }
 );
 
