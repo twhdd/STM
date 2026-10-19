@@ -19,6 +19,9 @@ const TrafficMeasurementProcessingLease = require("../models/TrafficMeasurementP
 const congestionDetectionService = require("../services/congestionDetectionService");
 const trafficAlertService = require("../services/trafficAlertService");
 const trafficMeasurementProcessingService = require("../services/trafficMeasurementProcessingService");
+const {
+  trafficMeasurementRecoveryWorker,
+} = require("../services/trafficMeasurementRecoveryWorker");
 const { createTrafficSimulator } = require("../services/trafficSimulatorService");
 const {
   ensureCongestionLifecycleIndexes,
@@ -292,6 +295,54 @@ describe(
             congestionEvent: eventWithoutAlert._id,
           }),
           0
+        );
+
+        // A failed measurement remains the location head until its retry succeeds.
+        // Advance only this fixture's persisted retry clock so this test can recover
+        // it without depending on the randomized backoff duration.
+        const alertFailureState = await TrafficMeasurement.findById(
+          alertProcessingFailure.measurement._id
+        )
+          .select("+processing")
+          .lean();
+        assert.equal(alertFailureState.processing.status, "RETRY");
+        assert.equal(alertFailureState.processing.attempts, 1);
+        assert.equal(
+          alertFailureState.processing.stage,
+          "DETECTION_COMPLETED"
+        );
+        assert.equal(
+          String(alertFailureState.processing.eventId),
+          String(eventWithoutAlert._id)
+        );
+        assert.ok(alertFailureState.processing.nextAttemptAt);
+        await TrafficMeasurement.updateOne(
+          { _id: alertFailureState._id },
+          { $set: { "processing.nextAttemptAt": new Date(0) } }
+        );
+        const recoveredAlertFailure =
+          await trafficMeasurementRecoveryWorker.processMeasurementNow(
+            alertFailureState._id
+          );
+        assert.equal(recoveredAlertFailure.completed, true);
+        assert.equal(recoveredAlertFailure.alertCreated, true);
+        assert.equal(
+          await TrafficAlert.countDocuments({
+            congestionEvent: eventWithoutAlert._id,
+          }),
+          1
+        );
+
+        const recoveredAlertFailureState = await TrafficMeasurement.findById(
+          alertFailureState._id
+        )
+          .select("+processing")
+          .lean();
+        assert.equal(recoveredAlertFailureState.processing.status, "COMPLETED");
+        assert.equal(recoveredAlertFailureState.processing.attempts, 2);
+        assert.equal(
+          recoveredAlertFailureState.processing.stage,
+          "ALERT_COMPLETED"
         );
 
         mock.method(
