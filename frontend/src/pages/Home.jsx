@@ -1,7 +1,14 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import api from "../services/api";
+import { useAuth } from "../context/useAuth";
+import { REALTIME_EVENTS, subscribeToRealtimeEvents } from "../services/realtime";
+import {
+  getMonitoringStatuses,
+  getRecentAlerts,
+} from "../utils/dashboardSummary";
 
 export function Home() {
+  const { token } = useAuth();
   const [analytics, setAnalytics] = useState(null);
   const [locations, setLocations] = useState([]);
   const [alerts, setAlerts] = useState([]);
@@ -10,9 +17,74 @@ export function Home() {
   const [error, setError] = useState(null);
   const [feedErrors, setFeedErrors] = useState([]);
   const [refreshIndex, setRefreshIndex] = useState(0);
+  const [realtimeStatus, setRealtimeStatus] = useState("disconnected");
+  const realtimeRefreshTimer = useRef(null);
+  const dashboardFetchInProgress = useRef(false);
+  const dashboardRefreshPending = useRef(false);
+  const isMounted = useRef(true);
+
+  const requestDashboardRefresh = useCallback((showLoading = false) => {
+    if (showLoading) setLoading(true);
+    if (dashboardFetchInProgress.current) {
+      dashboardRefreshPending.current = true;
+      return;
+    }
+    setRefreshIndex((current) => current + 1);
+  }, []);
+
+  useEffect(() => {
+    isMounted.current = true;
+    return () => {
+      isMounted.current = false;
+      dashboardRefreshPending.current = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!token) return undefined;
+
+    const handleRealtimeEvent = () => {
+      if (realtimeRefreshTimer.current) {
+        window.clearTimeout(realtimeRefreshTimer.current);
+      }
+      realtimeRefreshTimer.current = window.setTimeout(() => {
+        realtimeRefreshTimer.current = null;
+        requestDashboardRefresh();
+      }, 150);
+    };
+    const unsubscribe = subscribeToRealtimeEvents(
+      token,
+      [
+        REALTIME_EVENTS.MEASUREMENT_CREATED,
+        REALTIME_EVENTS.CONGESTION_DETECTED,
+        REALTIME_EVENTS.CONGESTION_CLEARED,
+        REALTIME_EVENTS.ALERT_CREATED,
+        REALTIME_EVENTS.ALERT_RESOLVED,
+      ],
+      handleRealtimeEvent,
+      setRealtimeStatus
+    );
+
+    return () => {
+      unsubscribe();
+      if (realtimeRefreshTimer.current) {
+        window.clearTimeout(realtimeRefreshTimer.current);
+        realtimeRefreshTimer.current = null;
+      }
+    };
+  }, [token, requestDashboardRefresh]);
 
   useEffect(() => {
     let isCancelled = false;
+
+    if (dashboardFetchInProgress.current) {
+      dashboardRefreshPending.current = true;
+      return () => {
+        isCancelled = true;
+      };
+    }
+
+    dashboardFetchInProgress.current = true;
 
     async function fetchDashboard() {
       try {
@@ -70,6 +142,12 @@ export function Home() {
           setError(err.message || "Failed to load real-time traffic dashboard data.");
           setLoading(false);
         }
+      } finally {
+        dashboardFetchInProgress.current = false;
+        if (dashboardRefreshPending.current && isMounted.current) {
+          dashboardRefreshPending.current = false;
+          setRefreshIndex((current) => current + 1);
+        }
       }
     }
 
@@ -81,8 +159,7 @@ export function Home() {
   }, [refreshIndex]);
 
   const handleRefresh = () => {
-    setLoading(true);
-    setRefreshIndex((prev) => prev + 1);
+    requestDashboardRefresh(true);
   };
 
   if (loading) {
@@ -123,7 +200,23 @@ export function Home() {
   }
 
   const distribution = analytics?.trafficDistribution || {};
-  const hasMeasurements = (analytics?.totalMeasurements || 0) > 0;
+  const hasMeasurements =
+    Number.isFinite(analytics?.totalMeasurements) &&
+    analytics.totalMeasurements > 0;
+  const recentAlerts = getRecentAlerts(alerts);
+  const monitoringStatuses = getMonitoringStatuses({
+    analytics,
+    locations,
+    alerts,
+    feedErrors,
+    realtimeStatus,
+  });
+  const alertsUnavailable = feedErrors.some((feedError) =>
+    feedError.startsWith("Traffic alerts:")
+  );
+  const locationsUnavailable = feedErrors.some((feedError) =>
+    feedError.startsWith("Traffic locations:")
+  );
 
   return (
     <div className="page-container">
@@ -133,6 +226,17 @@ export function Home() {
             <h2 className="page-title">Operations Dashboard</h2>
             <p className="page-description">
               Real-time traffic telemetry, automated congestion status, and active incident feed.
+            </p>
+            <p className="page-description" role="status" aria-live="polite">
+              {realtimeStatus === "connected"
+                ? "Live updates connected"
+                : realtimeStatus === "connecting"
+                  ? "Connecting to live updates..."
+                  : realtimeStatus === "reconnecting"
+                    ? "Live updates disconnected; reconnecting..."
+                    : realtimeStatus === "error"
+                      ? "Live updates unavailable; showing REST data."
+                      : "Live updates disconnected; showing REST data."}
             </p>
           </div>
           <button type="button" className="btn-refresh" onClick={handleRefresh} title="Refresh Telemetry">
@@ -158,6 +262,38 @@ export function Home() {
         </div>
       )}
 
+      <section className="card" aria-label="System health and monitoring status">
+        <div className="card-header">
+          <h3 className="card-title">System Health / Monitoring Status</h3>
+          <span className="card-subtitle">
+            Based on currently available API data and live-update connection
+          </span>
+        </div>
+        <div className="stats-grid">
+          {monitoringStatuses.map((status) => (
+            <div className="stat-card" key={status.label}>
+              <div className="stat-content">
+                <span className="stat-label">{status.label}</span>
+                <span
+                  className={`badge ${
+                    status.state === "unavailable"
+                      ? "badge-neutral"
+                      : status.state === "warning"
+                        ? "badge-warning"
+                        : status.state === "available"
+                          ? "badge-success"
+                          : "badge-neutral"
+                  }`}
+                  role="status"
+                >
+                  {status.value}
+                </span>
+              </div>
+            </div>
+          ))}
+        </div>
+      </section>
+
       {/* KPI Metric Cards Grid */}
       <div className="stats-grid">
         <div className="stat-card">
@@ -169,8 +305,8 @@ export function Home() {
           </div>
           <div className="stat-content">
             <span className="stat-label">Total Measurements</span>
-            <span className="stat-value">{analytics ? analytics.totalMeasurements : 0}</span>
-            <span className="stat-hint">Recorded sensor cycles</span>
+            <span className="stat-value">{analytics?.totalMeasurements ?? "—"}</span>
+            <span className="stat-hint">Recorded traffic measurements</span>
           </div>
         </div>
 
@@ -185,7 +321,7 @@ export function Home() {
           </div>
           <div className="stat-content">
             <span className="stat-label">Average Vehicle Count</span>
-            <span className="stat-value">{analytics ? `${analytics.averageVehicleCount}` : "0"}</span>
+            <span className="stat-value">{analytics?.averageVehicleCount ?? "—"}</span>
             <span className="stat-hint">Vehicles per interval</span>
           </div>
         </div>
@@ -199,7 +335,9 @@ export function Home() {
           </div>
           <div className="stat-content">
             <span className="stat-label">Average Speed</span>
-            <span className="stat-value">{analytics ? `${analytics.averageSpeed} km/h` : "0 km/h"}</span>
+            <span className="stat-value">
+              {analytics?.averageSpeed != null ? `${analytics.averageSpeed} km/h` : "—"}
+            </span>
             <span className="stat-hint">Corridor flow velocity</span>
           </div>
         </div>
@@ -214,7 +352,7 @@ export function Home() {
           </div>
           <div className="stat-content">
             <span className="stat-label">Congestion Events</span>
-            <span className="stat-value">{analytics ? analytics.totalCongestionEvents : 0}</span>
+            <span className="stat-value">{analytics?.totalCongestionEvents ?? "—"}</span>
             <span className="stat-hint">Detected bottleneck incidents</span>
           </div>
         </div>
@@ -228,8 +366,8 @@ export function Home() {
           </div>
           <div className="stat-content">
             <span className="stat-label">Active Alerts</span>
-            <span className="stat-value">{analytics ? analytics.activeAlerts : 0}</span>
-            <span className="stat-hint">Unresolved high-priority notices</span>
+            <span className="stat-value">{analytics?.activeAlerts ?? "—"}</span>
+            <span className="stat-hint">Unresolved traffic alerts</span>
           </div>
         </div>
 
@@ -242,7 +380,9 @@ export function Home() {
           </div>
           <div className="stat-content">
             <span className="stat-label">Monitored Locations</span>
-            <span className="stat-value">{locations.length}</span>
+            <span className="stat-value">
+              {locationsUnavailable ? "—" : locations.length}
+            </span>
             <span className="stat-hint">Connected sensor nodes</span>
           </div>
         </div>
@@ -372,12 +512,14 @@ export function Home() {
         {/* Real Active Traffic Alerts */}
         <div className="card dashboard-card">
           <div className="card-header">
-            <h3 className="card-title">Recent Traffic Alerts</h3>
-            <span className="card-subtitle">{alerts.length} total alert(s)</span>
+            <h3 className="card-title">Recent Notifications</h3>
+            <span className="card-subtitle">{recentAlerts.length} recent alert(s)</span>
           </div>
           <div className="card-body">
-            {alerts.length === 0 ? (
-              <p className="empty-state-text">No active traffic alerts.</p>
+            {alertsUnavailable ? (
+              <p className="empty-state-text">Traffic notifications are unavailable.</p>
+            ) : recentAlerts.length === 0 ? (
+              <p className="empty-state-text">No traffic notifications found.</p>
             ) : (
               <div className="table-responsive">
                 <table className="data-table">
@@ -387,10 +529,12 @@ export function Home() {
                       <th>Message</th>
                       <th>Severity</th>
                       <th>Status</th>
+                      <th>Location</th>
+                      <th>Time</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {alerts.map((alert) => (
+                    {recentAlerts.map((alert) => (
                       <tr key={alert._id}>
                         <td>
                           <span className="font-semibold">{alert.alertType}</span>
@@ -417,6 +561,19 @@ export function Home() {
                           >
                             {alert.status}
                           </span>
+                        </td>
+                        <td>
+                          {alert.location && typeof alert.location === "object"
+                            ? [alert.location.name, alert.location.area]
+                                .filter(Boolean)
+                                .join(" — ") || "Location unavailable"
+                            : "Location unavailable"}
+                        </td>
+                        <td>
+                          {alert.createdAt &&
+                          !Number.isNaN(new Date(alert.createdAt).getTime())
+                            ? new Date(alert.createdAt).toLocaleString()
+                            : "Time unavailable"}
                         </td>
                       </tr>
                     ))}

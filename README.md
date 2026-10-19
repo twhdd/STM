@@ -133,13 +133,13 @@ STM
 │   └── Database Configuration
 │
 ├── ai-service/
-│   └── AI/ML components
+│   └── Offline recorded-video vehicle detection and tracking MVP
 │
 └── simulator/
     └── Traffic simulation components
 ```
 
-> **Note:** `ai-service` is reserved for further development. A development-only backend traffic simulator is documented below.
+> **Note:** `ai-service` currently provides an isolated offline vehicle-detection and optional tracking MVP for recorded videos. It is not integrated with backend measurements or live CCTV. A development-only backend traffic simulator is documented below.
 
 ---
 
@@ -278,17 +278,16 @@ npm start
 
 The backend provides an opt-in seed command for local role-based frontend testing. It only runs with `NODE_ENV=development`, requires explicit confirmation, and only connects when `STM_TEST_DATABASE_NAME` (which must contain `test`) matches the database in `MONGO_URI`. Use a dedicated test database, never a shared or production database.
 
-From `backend/` in PowerShell, point the seed at a dedicated local test database and enter a password at the hidden prompt:
+When its `MONGO_URI` has no database path, the development application selects `stm_test` by default; `STM_TEST_DATABASE_NAME=stm_test` makes that target explicit. From `backend/` in PowerShell, verify/create the accounts in that same development database and enter a password at the hidden prompt:
 
 ```powershell
 $env:NODE_ENV = "development"
-$env:MONGO_URI = "mongodb://127.0.0.1:27017/stm_role_test"
-$env:STM_TEST_DATABASE_NAME = "stm_role_test"
+$env:STM_TEST_DATABASE_NAME = "stm_test"
 $env:STM_TEST_ACCOUNTS_CONFIRM = "YES"
 $secret = Read-Host "Test account password" -AsSecureString
 $env:STM_TEST_ACCOUNT_PASSWORD = [System.Net.NetworkCredential]::new("", $secret).Password
 npm run seed:test-accounts
-Remove-Item Env:STM_TEST_ACCOUNT_PASSWORD, Env:STM_TEST_ACCOUNTS_CONFIRM
+Remove-Item Env:STM_TEST_ACCOUNT_PASSWORD, Env:STM_TEST_ACCOUNTS_CONFIRM, Env:STM_TEST_DATABASE_NAME
 ```
 
 `JWT_SECRET` must also be configured for login verification (the backend `.env` may provide it). The password must be at least 16 characters and include lowercase, uppercase, numeric, and symbol characters. The seed uses the existing bcrypt hashing cost, retains existing accounts and passwords, refuses role conflicts, and verifies all five accounts through the local login endpoint without displaying credentials or tokens.
@@ -311,7 +310,7 @@ It idempotently creates or updates the seed-owned locations, signals, monitoring
 
 The opt-in traffic-processing integration suite can use a dedicated test database name instead of the shared `stm_test`. The configured name must be a valid MongoDB database name containing `test` as a segment (for example, `stm_congestion_it_test`) and must not contain a `prod`, `production`, `live`, or `staging` segment. If `MONGO_URI` includes a database path, that path must exactly match `STM_TEST_DATABASE_NAME`; when it has no database path, Mongoose selects the configured name explicitly.
 
-Before running the suite, provision a separate, empty test database on the intended non-production MongoDB cluster. Do not use the existing `stm_test` database: its historical active congestion events conflict with the lifecycle uniqueness preflight. The test runner verifies the connected database name before creating lifecycle indexes or running any test writes. It preserves the preflight and stops without changing records if conflicting active events or alerts already exist. The suite does not seed data or migrate existing records; its own fixtures use unique identifiers and are cleaned up by the tests, except simulator history, which is intentionally retained.
+Before running the suite, provision a separate, empty test database on the intended non-production MongoDB cluster. Do not use the existing `stm_test` database: its historical active congestion events conflict with the lifecycle uniqueness preflight. The test runner verifies the connected database name before creating lifecycle indexes or running any test writes. It preserves the preflight and stops without changing records if conflicting active events or alerts already exist. The suite does not seed data or migrate existing records; its own fixtures use unique identifiers and are cleaned up by the tests.
 
 Provision/verify the dedicated database on a non-production cluster first. From `backend/` in PowerShell, set `MONGO_URI` to that cluster (for example, for a local MongoDB instance use `mongodb://127.0.0.1:27017/stm_congestion_it_test`; for a remote cluster use its dedicated test URI with the matching database path, or no path). Ensure `JWT_SECRET` is configured, then run:
 
@@ -329,7 +328,7 @@ The integration opt-in and confirmation are both required. The worker processes 
 
 ### Development Traffic Simulator
 
-The backend includes an opt-in traffic simulator for development. It generates clearly labeled simulated measurements using the same ingestion, congestion-detection, and alert-processing pipeline as submitted measurements. Simulator measurements have `source: "SIMULATOR"`; measurements submitted through the existing API default to `source: "API"` (this source label does not assert that data is verified live traffic). The simulator creates uniquely named simulator locations and monitoring devices and does not modify existing traffic records. Simulator history and its owned location/device records are retained when the process stops.
+The backend includes an opt-in traffic simulator for development. It generates clearly labeled simulated measurements using the same ingestion, congestion-detection, and alert-processing pipeline as submitted measurements. Simulator measurements have `source: "SIMULATOR"`; measurements submitted through the existing API default to `source: "API"` (this source label does not assert that data is verified live traffic). The simulator uses existing active traffic locations and `TRAFFIC_SENSOR` devices; it does not create locations/devices or modify existing measurements. New simulated measurements are retained when the process stops.
 
 The simulator is disabled by default. From `backend/` in PowerShell, configure a development database before opting in:
 
@@ -341,12 +340,12 @@ $env:STM_TEST_DATA_CONFIRM = "YES"
 $env:STM_TRAFFIC_SIMULATOR_ENABLED = "YES"
 $env:STM_TRAFFIC_SIMULATOR_INTERVAL_MS = "15000"
 $env:STM_TRAFFIC_SIMULATOR_DEVICE_COUNT = "3"
-$env:STM_TRAFFIC_SIMULATOR_PATTERNS = "normal,moderate,heavy,burst"
+$env:STM_TRAFFIC_SIMULATOR_SCENARIO = "rush-hour"
 $env:STM_TRAFFIC_SIMULATOR_SEED = "12345"
 npm run dev
 ```
 
-Only `NODE_ENV=development` and `STM_TRAFFIC_SIMULATOR_ENABLED=YES` enable it. Before writing, the simulator also requires `STM_TEST_DATA_CONFIRM=YES`, a safe test database name in `STM_TEST_DATABASE_NAME`, a valid MongoDB URI whose optional database path matches that name, and a connected database with the same name. Use a dedicated test cluster; the application can verify the database name but cannot independently identify whether a MongoDB host is production. The optional interval must be at least 1000 ms, device count must be 1–20, and patterns may be any comma-separated selection of `normal`, `moderate`, `heavy`, and `burst`. Set a numeric seed for repeatable sequences; without one, runtime randomness is used. This is generated test data, not a live traffic feed. Stop the backend normally to stop generation; no public start/stop endpoint exists, and simulator history is retained.
+Only `NODE_ENV=development` and `STM_TRAFFIC_SIMULATOR_ENABLED=YES` enable it. Before writing, the simulator also requires `STM_TEST_DATA_CONFIRM=YES`, a safe test database name in `STM_TEST_DATABASE_NAME`, a valid MongoDB URI whose optional database path matches that name, and a connected database with the same name. Use a dedicated test cluster; the application can verify the database name but cannot independently identify whether a MongoDB host is production. The optional interval must be at least 1000 ms, device count must be 1–20, and the selected sensors must already belong to active locations. Select one scenario with `STM_TRAFFIC_SIMULATOR_SCENARIO`: `normal`, `rush-hour`, `heavy-congestion`, `incident`, or `recovery`. Rush-hour and congestion scenarios build progressively; recovery starts congested and clears progressively. Select a numeric seed for reproducible road-to-road variation. The simulator starts automatically with the backend when enabled and stops with normal backend shutdown; restart the backend to change scenarios. No public start/stop endpoint exists, and simulated measurement history is retained. This is generated test data, not a live traffic feed.
 
 ### Real-Time Dashboard Updates
 
@@ -404,6 +403,22 @@ Database configuration is maintained in:
 ```text
 backend/config/database.js
 ```
+### Computer Vision Integration — Work in Progress
+
+**Phase 1 — Offline CV pipeline:** Implemented and unit-tested. Real-world inference remains unverified.
+
+**Phase 3 — STM backend integration: INCOMPLETE**
+- Upload, job, analysis, and worker service foundations exist.
+- API controllers/routes are not yet implemented and registered.
+- Realtime progress updates are not integrated.
+- Worker startup/shutdown is not wired into the server lifecycle.
+- Integration with standard `TrafficMeasurement` records is not implemented.
+- End-to-end processing, authorization, and recovery remain to be verified.
+
+**Phase 4 — Frontend interface: NOT IMPLEMENTED**
+- Video upload interface, processing status, metrics display, annotated-video playback, and result downloads remain pending.
+
+This checkpoint preserves ongoing development work. Phases 3 and 4 must not be represented as completed or production-ready.
 
 ---
 

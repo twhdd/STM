@@ -5,7 +5,7 @@ const {
 // Recommend the best route
 const getRecommendedRoute = async (req, res) => {
   try {
-    const { startLocation, endLocation } = req.body;
+    const { startLocation, endLocation } = req.body || {};
 
     if (!startLocation || !endLocation) {
       return res.status(400).json({
@@ -20,6 +20,12 @@ const getRecommendedRoute = async (req, res) => {
 
     res.status(200).json(result);
   } catch (error) {
+    if (error.statusCode === 400 || error.statusCode === 404) {
+      return res.status(error.statusCode).json({
+        message: error.message,
+      });
+    }
+
     res.status(500).json({
       message: "Failed to recommend route",
       error: error.message,

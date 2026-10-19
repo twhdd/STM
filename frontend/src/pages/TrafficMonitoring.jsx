@@ -3,6 +3,7 @@ import api from "../services/api";
 import { useAuth } from "../context/useAuth";
 import { hasRole, roleAccess } from "../config/roleAccess";
 import { REALTIME_EVENTS, subscribeToRealtimeEvents } from "../services/realtime";
+import { formatMeasurementSource } from "../utils/trafficMeasurementDisplay";
 
 function formatDateTime(dateStr) {
   if (!dateStr) return "—";
@@ -356,7 +357,7 @@ export function TrafficMonitoring() {
           <div className="stat-content">
             <span className="stat-label">Traffic Measurements</span>
             <span className="stat-value">{measurements.length}</span>
-            <span className="stat-hint">Recorded sensor cycles</span>
+            <span className="stat-hint">Recorded measurement cycles</span>
           </div>
         </div>
 
@@ -521,6 +522,7 @@ export function TrafficMonitoring() {
                   <tr>
                     <th>Location</th>
                     <th>Device</th>
+                    <th>Source</th>
                     <th>Vehicle Count</th>
                     <th>Average Speed</th>
                     <th>Traffic Density</th>
@@ -534,6 +536,19 @@ export function TrafficMonitoring() {
                         {resolveLocationName(m.location)}
                       </td>
                       <td>{m.device?.name || m.device?.deviceId || "—"}</td>
+                      <td>
+                        <span
+                          className={`badge ${
+                            m.source === "SIMULATOR"
+                              ? "badge-warning"
+                              : m.source === "API"
+                                ? "badge-info"
+                                : "badge-neutral"
+                          }`}
+                        >
+                          {formatMeasurementSource(m.source)}
+                        </span>
+                      </td>
                       <td>{m.vehicleCount ?? "—"}</td>
                       <td>
                         {m.averageSpeed != null ? `${m.averageSpeed} km/h` : "—"}

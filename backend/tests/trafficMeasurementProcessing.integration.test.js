@@ -708,91 +708,137 @@ describe(
 
     test("persists simulator measurements, processes congestion, and stops without deleting history", async () => {
       const runId = `simulatorit${Date.now()}${process.pid}`;
-      const deviceId = `STM-SIM-${runId}-01`;
-      const locationName = `STM Simulator ${runId} Location 01`;
+      const deviceId = `STM-TEST-SIM-SENSOR-${runId}`;
+      const locationName = `STM integration simulator location ${runId}`;
+      let location;
+      let device;
+      let simulator;
+      let recoverySimulator;
       const environment = {
         ...process.env,
         NODE_ENV: "development",
         STM_TRAFFIC_SIMULATOR_ENABLED: "YES",
         STM_TRAFFIC_SIMULATOR_INTERVAL_MS: "60000",
         STM_TRAFFIC_SIMULATOR_DEVICE_COUNT: "1",
-        STM_TRAFFIC_SIMULATOR_PATTERNS: "burst",
+        STM_TRAFFIC_SIMULATOR_SCENARIO: "incident",
         STM_TRAFFIC_SIMULATOR_SEED: "42",
         STM_TEST_DATABASE_NAME: process.env.STM_TEST_DATABASE_NAME,
         STM_TEST_DATA_CONFIRM: "YES",
       };
-      const simulator = createTrafficSimulator({
-        environment,
-        createRunId: () => runId,
-        logger: { info() {}, warn() {}, error() {} },
-      });
 
       try {
+        location = await TrafficLocation.create({
+          name: locationName,
+          area: "Integration test fixture",
+          latitude: 12.9754,
+          longitude: 77.6051,
+          status: "ACTIVE",
+        });
+        device = await MonitoringDevice.create({
+          deviceId,
+          deviceType: "TRAFFIC_SENSOR",
+          name: `STM integration simulator sensor ${runId}`,
+          location: location._id,
+          status: "ACTIVE",
+        });
+        simulator = createTrafficSimulator({
+          environment,
+          logger: { info() {}, warn() {}, error() {} },
+        });
         assert.equal(await simulator.start(), true);
-        const device = await MonitoringDevice.findOne({ deviceId });
-        assert.ok(device, "simulator should create its uniquely named device");
-
-        const measurement = await TrafficMeasurement.findOne({
+        for (let index = 1; index < 5; index += 1) {
+          await simulator.runTick();
+        }
+        const measurements = await TrafficMeasurement.find({
           device: device._id,
           source: "SIMULATOR",
-        }).sort({ measuredAt: -1 });
-        assert.ok(measurement, "simulator measurement should be persisted");
-        assert.equal(measurement.vehicleCount >= 100, true);
+        }).sort({ measuredAt: 1 });
+        assert.equal(measurements.length, 5);
+        assert.ok(
+          measurements[0].vehicleCount < measurements.at(-1).vehicleCount,
+          "incident measurements should build progressively"
+        );
+        const measurement = measurements.at(-1);
+        assert.equal(measurement.trafficDensity, "SEVERE");
 
         const event = await CongestionEvent.findOne({
-          measurement: measurement._id,
+          location: location._id,
+          status: "ACTIVE",
         });
         assert.ok(event, "simulator measurement should trigger congestion detection");
         const alert = await TrafficAlert.findOne({ congestionEvent: event._id });
         assert.ok(alert, "congestion event should generate a persisted alert");
 
         await simulator.stop();
-        const countAfterStop = await TrafficMeasurement.countDocuments({
+        const incidentCountAfterStop = await TrafficMeasurement.countDocuments({
           device: device._id,
         });
         await simulator.runTick();
         assert.equal(
           await TrafficMeasurement.countDocuments({ device: device._id }),
-          countAfterStop
+          incidentCountAfterStop
         );
         assert.ok(
           await TrafficMeasurement.exists({ _id: measurement._id }),
           "stopping should retain historical measurements"
         );
-      } finally {
-        await simulator.stop();
-        const device = await MonitoringDevice.findOne({ deviceId }).select(
-          "_id location"
+
+        recoverySimulator = createTrafficSimulator({
+          environment: {
+            ...environment,
+            STM_TRAFFIC_SIMULATOR_SCENARIO: "recovery",
+          },
+          logger: { info() {}, warn() {}, error() {} },
+        });
+        assert.equal(await recoverySimulator.start(), true);
+        for (let index = 1; index < 8; index += 1) {
+          await recoverySimulator.runTick();
+        }
+        assert.equal(
+          (await CongestionEvent.findById(event._id)).status,
+          "RESOLVED"
         );
-        const location = device
-          ? null
-          : await TrafficLocation.findOne({ name: locationName }).select("_id");
-        const measurementIds = device
-          ? (
-              await TrafficMeasurement.find({ device: device._id }).select(
-                "_id"
-              )
-            ).map((item) => item._id)
-          : [];
-        const events = measurementIds.length
-          ? await CongestionEvent.find({
-              measurement: { $in: measurementIds },
-            }).select("_id")
-          : [];
-        const eventIds = events.map((item) => item._id);
-        if (eventIds.length) {
-          await TrafficAlert.deleteMany({
-            congestionEvent: { $in: eventIds },
-          });
-          await CongestionEvent.deleteMany({ _id: { $in: eventIds } });
-        }
-        if (measurementIds.length) {
-          await TrafficMeasurement.deleteMany({ _id: { $in: measurementIds } });
-        }
+        assert.equal((await TrafficAlert.findById(alert._id)).status, "RESOLVED");
+
+        await recoverySimulator.stop();
+        const countAfterStop = await TrafficMeasurement.countDocuments({
+          device: device._id,
+        });
+        await recoverySimulator.runTick();
+        assert.equal(
+          await TrafficMeasurement.countDocuments({ device: device._id }),
+          countAfterStop
+        );
+      } finally {
+        if (simulator) await simulator.stop();
+        if (recoverySimulator) await recoverySimulator.stop();
         if (device) {
+          const measurementIds = (
+            await TrafficMeasurement.find({ device: device._id }).select("_id")
+          ).map((item) => item._id);
+          const events = measurementIds.length
+            ? await CongestionEvent.find({
+                measurement: { $in: measurementIds },
+              }).select("_id")
+            : [];
+          const eventIds = events.map((item) => item._id);
+          if (eventIds.length) {
+            await TrafficAlert.deleteMany({
+              congestionEvent: { $in: eventIds },
+            });
+            await CongestionEvent.deleteMany({ _id: { $in: eventIds } });
+          }
+          if (measurementIds.length) {
+            await TrafficMeasurement.deleteMany({
+              _id: { $in: measurementIds },
+            });
+          }
           await MonitoringDevice.deleteOne({ _id: device._id });
-          await TrafficLocation.deleteOne({ _id: device.location });
-        } else if (location) {
+        }
+        if (location) {
+          await TrafficMeasurementProcessingLease.deleteOne({
+            _id: location._id,
+          });
           await TrafficLocation.deleteOne({ _id: location._id });
         }
       }

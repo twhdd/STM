@@ -1,14 +1,40 @@
-const { randomUUID } = require("node:crypto");
 const mongoose = require("mongoose");
 const TrafficLocation = require("../models/TrafficLocation");
 const MonitoringDevice = require("../models/MonitoringDevice");
 const {
   validateConfiguredTestDatabaseEnvironment,
 } = require("../scripts/seed-test-data");
+const { determineCongestionLevel } = require("./congestionDetectionService");
 const trafficMeasurementIngestionService = require("./trafficMeasurementIngestionService");
 
-const DEFAULT_PATTERNS = ["normal", "moderate", "heavy", "burst"];
-const ALLOWED_PATTERNS = new Set(DEFAULT_PATTERNS);
+const SCENARIO_PROFILES = Object.freeze({
+  normal: {
+    initial: { vehicleCount: 20, averageSpeed: 48 },
+    target: { vehicleCount: 20, averageSpeed: 48 },
+    step: { vehicleCount: 0, averageSpeed: 0 },
+  },
+  "rush-hour": {
+    initial: { vehicleCount: 20, averageSpeed: 48 },
+    target: { vehicleCount: 82, averageSpeed: 20 },
+    step: { vehicleCount: 8, averageSpeed: 4 },
+  },
+  "heavy-congestion": {
+    initial: { vehicleCount: 32, averageSpeed: 42 },
+    target: { vehicleCount: 92, averageSpeed: 18 },
+    step: { vehicleCount: 10, averageSpeed: 4 },
+  },
+  incident: {
+    initial: { vehicleCount: 25, averageSpeed: 48 },
+    target: { vehicleCount: 125, averageSpeed: 9 },
+    step: { vehicleCount: 20, averageSpeed: 7 },
+  },
+  recovery: {
+    initial: { vehicleCount: 115, averageSpeed: 12 },
+    target: { vehicleCount: 20, averageSpeed: 48 },
+    step: { vehicleCount: 12, averageSpeed: 5 },
+  },
+});
+const ALLOWED_SCENARIOS = new Set(Object.keys(SCENARIO_PROFILES));
 const DEFAULT_INTERVAL_MS = 15000;
 const DEFAULT_DEVICE_COUNT = 3;
 const MAX_DEVICE_COUNT = 20;
@@ -21,7 +47,10 @@ function createConfigurationError(message) {
 
 function parseSimulatorConfiguration(environment) {
   if (environment.NODE_ENV === "production") {
-    return { enabled: false, reason: "The traffic simulator is disabled in production." };
+    return {
+      enabled: false,
+      reason: "The traffic simulator is disabled in production.",
+    };
   }
 
   if (
@@ -56,17 +85,11 @@ function parseSimulatorConfiguration(environment) {
     );
   }
 
-  const patterns = environment.STM_TRAFFIC_SIMULATOR_PATTERNS
-    ? environment.STM_TRAFFIC_SIMULATOR_PATTERNS
-        .split(",")
-        .map((pattern) => pattern.trim().toLowerCase())
-    : DEFAULT_PATTERNS;
-  if (
-    patterns.length === 0 ||
-    patterns.some((pattern) => !ALLOWED_PATTERNS.has(pattern))
-  ) {
+  const scenario = environment.STM_TRAFFIC_SIMULATOR_SCENARIO || "normal";
+  if (!ALLOWED_SCENARIOS.has(scenario)) {
     throw createConfigurationError(
-      `STM_TRAFFIC_SIMULATOR_PATTERNS may contain only: ${DEFAULT_PATTERNS.join(", ")}.`
+      "STM_TRAFFIC_SIMULATOR_SCENARIO must be one of: " +
+        `${[...ALLOWED_SCENARIOS].join(", ")}.`
     );
   }
 
@@ -84,7 +107,7 @@ function parseSimulatorConfiguration(environment) {
     enabled: true,
     intervalMs,
     deviceCount,
-    patterns,
+    scenario,
     seed,
   };
 }
@@ -103,48 +126,104 @@ function createSeededRandom(seed) {
 }
 
 function randomInteger(random, minimum, maximum) {
-  return minimum + Math.floor(random() * (maximum - minimum + 1));
+  const sample = random();
+  if (
+    typeof sample !== "number" ||
+    !Number.isFinite(sample) ||
+    sample < 0 ||
+    sample >= 1
+  ) {
+    throw createConfigurationError(
+      "The simulator random source must return a number in the range [0, 1)."
+    );
+  }
+  return minimum + Math.floor(sample * (maximum - minimum + 1));
 }
 
-function generateMeasurement({ device, pattern, random, measuredAt = new Date() }) {
-  let vehicleCount;
-  let averageSpeed;
-  let trafficDensity;
-
-  switch (pattern) {
-    case "normal":
-      vehicleCount = randomInteger(random, 5, 32);
-      averageSpeed = randomInteger(random, 38, 58);
-      trafficDensity = "LOW";
-      break;
-    case "moderate":
-      vehicleCount = randomInteger(random, 40, 65);
-      averageSpeed = randomInteger(random, 25, 34);
-      trafficDensity = "MEDIUM";
-      break;
-    case "heavy":
-      vehicleCount = randomInteger(random, 70, 95);
-      averageSpeed = randomInteger(random, 18, 24);
-      trafficDensity = "HIGH";
-      break;
-    case "burst":
-      vehicleCount = randomInteger(random, 100, 160);
-      averageSpeed = randomInteger(random, 8, 20);
-      trafficDensity = "SEVERE";
-      break;
-    default:
-      throw createConfigurationError(`Unsupported simulator pattern: ${pattern}`);
+function createScenarioState(scenario, random) {
+  const profile = SCENARIO_PROFILES[scenario];
+  if (!profile) {
+    throw createConfigurationError(`Unsupported traffic scenario: ${scenario}`);
   }
+  const vehicleOffset = randomInteger(random, -3, 3);
+  const speedOffset = randomInteger(random, -2, 2);
+  return {
+    vehicleCount: Math.max(0, profile.initial.vehicleCount + vehicleOffset),
+    averageSpeed: Math.max(0, profile.initial.averageSpeed + speedOffset),
+    targetVehicleCount: Math.max(
+      0,
+      profile.target.vehicleCount + vehicleOffset
+    ),
+    targetAverageSpeed: Math.max(
+      0,
+      profile.target.averageSpeed + speedOffset
+    ),
+    vehicleStep: profile.step.vehicleCount,
+    speedStep: profile.step.averageSpeed,
+  };
+}
 
+function moveToward(value, target, maximumStep) {
+  if (value < target) return Math.min(target, value + maximumStep);
+  if (value > target) return Math.max(target, value - maximumStep);
+  return value;
+}
+
+function advanceScenarioState(state) {
+  state.vehicleCount = moveToward(
+    state.vehicleCount,
+    state.targetVehicleCount,
+    state.vehicleStep
+  );
+  state.averageSpeed = moveToward(
+    state.averageSpeed,
+    state.targetAverageSpeed,
+    state.speedStep
+  );
+  return state;
+}
+
+function generateMeasurement({ device, state, measuredAt = new Date() }) {
   return {
     device: device._id,
     location: device.location,
-    vehicleCount,
-    averageSpeed,
-    trafficDensity,
+    vehicleCount: state.vehicleCount,
+    averageSpeed: state.averageSpeed,
+    trafficDensity: determineCongestionLevel(
+      state.vehicleCount,
+      state.averageSpeed
+    ),
     source: "SIMULATOR",
     measuredAt,
   };
+}
+
+async function findConfiguredDevices({
+  LocationModel,
+  DeviceModel,
+  deviceCount,
+}) {
+  const locations = await LocationModel.find({ status: "ACTIVE" })
+    .select("_id")
+    .sort({ _id: 1 })
+    .lean();
+  if (!locations.length) return [];
+
+  const locationIds = locations.map(({ _id }) => _id);
+  const activeLocationIds = new Set(locationIds.map(String));
+  const devices = await DeviceModel.find({
+    status: "ACTIVE",
+    deviceType: "TRAFFIC_SENSOR",
+    location: { $in: locationIds },
+  })
+    .sort({ deviceId: 1, _id: 1 })
+    .limit(deviceCount)
+    .lean();
+
+  return devices.filter(
+    (device) =>
+      device.location && activeLocationIds.has(String(device.location))
+  );
 }
 
 function createTrafficSimulator({
@@ -153,10 +232,10 @@ function createTrafficSimulator({
   DeviceModel = MonitoringDevice,
   recordMeasurement =
     trafficMeasurementIngestionService.recordTrafficMeasurement,
+  randomSource,
   logger = console,
   setIntervalFunction = setInterval,
   clearIntervalFunction = clearInterval,
-  createRunId = () => randomUUID().replaceAll("-", "").slice(0, 10),
   now = () => new Date(),
   getDatabaseName = () => mongoose.connection.name,
 } = {}) {
@@ -169,30 +248,43 @@ function createTrafficSimulator({
   let random = null;
   let tickNumber = 0;
   let devices = [];
+  let scenarioStates = new Map();
+  let failureCount = 0;
+  let lastError = null;
+  let lastBatch = null;
+
+  function clearRunState() {
+    devices = [];
+    scenarioStates.clear();
+    random = null;
+    runConfiguration = null;
+    tickNumber = 0;
+    failureCount = 0;
+    lastError = null;
+    lastBatch = null;
+  }
 
   async function runTick() {
-    if (lifecycle !== "running" || tickPromise) return;
+    if (lifecycle !== "running") return;
+    if (tickPromise) return tickPromise;
 
-    tickPromise = (async () => {
+    const currentTick = Promise.resolve().then(async () => {
       const summary = {
+        tick: tickNumber + 1,
+        scenario: runConfiguration.scenario,
         generated: 0,
         congestionDetected: 0,
         alerts: 0,
         failed: 0,
-        patterns: {},
       };
-      for (const [index, device] of devices.entries()) {
+      for (const device of devices) {
         if (stopRequested) break;
 
-        const pattern =
-          runConfiguration.patterns[
-            (tickNumber + index) % runConfiguration.patterns.length
-          ];
-        summary.patterns[pattern] = (summary.patterns[pattern] || 0) + 1;
+        const state = scenarioStates.get(String(device._id));
+        advanceScenarioState(state);
         const measurement = generateMeasurement({
           device,
-          pattern,
-          random,
+          state,
           measuredAt: now(),
         });
 
@@ -203,9 +295,15 @@ function createTrafficSimulator({
             summary.congestionDetected += 1;
           }
           if (result.processing?.alertCreated) summary.alerts += 1;
-          if (result.processing?.completed === false) summary.failed += 1;
+          if (result.processing?.completed === false) {
+            summary.failed += 1;
+            lastError =
+              result.processing.message ||
+              "Traffic measurement processing did not complete";
+          }
         } catch (error) {
           summary.failed += 1;
+          lastError = String(error?.message || error);
           logger.error(
             `Traffic simulator failed to record a measurement for ${device.deviceId}:`,
             error
@@ -213,42 +311,22 @@ function createTrafficSimulator({
         }
       }
       tickNumber += 1;
+      failureCount += summary.failed;
+      lastBatch = summary;
       if (summary.generated > 0 || summary.failed > 0) {
         logger.info(
-          `[SIMULATOR] batch ${tickNumber}: generated=${summary.generated}, patterns=${JSON.stringify(summary.patterns)}, congestion=${summary.congestionDetected}, alerts=${summary.alerts}, incomplete=${summary.failed}`
+          `[SIMULATOR] tick ${tickNumber}: scenario=${summary.scenario}, generated=${summary.generated}, congestion=${summary.congestionDetected}, alerts=${summary.alerts}, incomplete=${summary.failed}`
         );
       }
-    })();
+      return summary;
+    });
 
+    tickPromise = currentTick;
     try {
-      await tickPromise;
+      return await currentTick;
     } finally {
-      tickPromise = null;
+      if (tickPromise === currentTick) tickPromise = null;
     }
-  }
-
-  async function createSimulatorDevices(configuration) {
-    const runId = createRunId();
-    const createdDevices = [];
-    for (let index = 0; index < configuration.deviceCount; index += 1) {
-      const suffix = String(index + 1).padStart(2, "0");
-      const location = await LocationModel.create({
-        name: `STM Simulator ${runId} Location ${suffix}`,
-        area: "Development simulator data",
-        latitude: 12.9 + index * 0.001,
-        longitude: 77.5 + index * 0.001,
-        status: "ACTIVE",
-      });
-      const device = await DeviceModel.create({
-        deviceId: `STM-SIM-${runId}-${suffix}`,
-        deviceType: "TRAFFIC_SENSOR",
-        name: `[SIMULATOR] ${runId} traffic sensor ${suffix}`,
-        location: location._id,
-        status: "ACTIVE",
-      });
-      createdDevices.push(device);
-    }
-    return createdDevices;
   }
 
   async function start() {
@@ -291,11 +369,33 @@ function createTrafficSimulator({
     startPromise = (async () => {
       try {
         runConfiguration = configuration;
-        random = createSeededRandom(configuration.seed);
-        devices = await createSimulatorDevices(configuration);
+        random = randomSource || createSeededRandom(configuration.seed);
+        failureCount = 0;
+        lastError = null;
+        lastBatch = null;
+        tickNumber = 0;
+        devices = await findConfiguredDevices({
+          LocationModel,
+          DeviceModel,
+          deviceCount: configuration.deviceCount,
+        });
+        if (!devices.length) {
+          logger.warn(
+            "Traffic simulator found no active traffic sensors at active locations; no measurements were generated."
+          );
+          lifecycle = "stopped";
+          clearRunState();
+          return false;
+        }
+        scenarioStates = new Map(
+          devices.map((device) => [
+            String(device._id),
+            createScenarioState(configuration.scenario, random),
+          ])
+        );
         if (stopRequested) {
           lifecycle = "stopped";
-          devices = [];
+          clearRunState();
           return false;
         }
 
@@ -303,24 +403,30 @@ function createTrafficSimulator({
         await runTick();
         if (stopRequested) {
           lifecycle = "stopped";
-          devices = [];
+          clearRunState();
           return false;
         }
         intervalHandle = setIntervalFunction(
           () => {
-            void runTick().catch((error) =>
-              logger.error("Traffic simulator tick failed:", error)
-            );
+            void runTick().catch((error) => {
+              failureCount += 1;
+              lastError = String(error?.message || error);
+              logger.error("Traffic simulator tick failed:", error);
+            });
           },
           configuration.intervalMs
         );
         logger.info(
-          `[SIMULATOR] started with ${devices.length} simulator-owned device(s), interval=${configuration.intervalMs}ms, patterns=${configuration.patterns.join(",")}. Data is simulated, not live traffic.`
+          `[SIMULATOR] started with ${devices.length} configured traffic sensor(s), interval=${configuration.intervalMs}ms, scenario=${configuration.scenario}. Data is simulated, not live traffic.`
         );
         return true;
       } catch (error) {
+        if (intervalHandle !== null) {
+          clearIntervalFunction(intervalHandle);
+          intervalHandle = null;
+        }
         lifecycle = "stopped";
-        devices = [];
+        clearRunState();
         logger.error("Traffic simulator failed to start:", error);
         return false;
       } finally {
@@ -342,10 +448,8 @@ function createTrafficSimulator({
     if (tickPromise) await tickPromise;
 
     lifecycle = "stopped";
-    devices = [];
-    random = null;
-    runConfiguration = null;
-    tickNumber = 0;
+    clearRunState();
+    stopRequested = false;
   }
 
   return {
@@ -356,6 +460,11 @@ function createTrafficSimulator({
       lifecycle,
       running: lifecycle === "running",
       deviceCount: devices.length,
+      scenario: runConfiguration?.scenario || null,
+      tickNumber,
+      failureCount,
+      lastError,
+      lastBatch,
     }),
   };
 }
@@ -363,9 +472,11 @@ function createTrafficSimulator({
 const trafficSimulator = createTrafficSimulator();
 
 module.exports = {
-  ALLOWED_PATTERNS,
+  ALLOWED_SCENARIOS,
   createSeededRandom,
+  createScenarioState,
   createTrafficSimulator,
+  advanceScenarioState,
   generateMeasurement,
   parseSimulatorConfiguration,
   trafficSimulator,

@@ -127,8 +127,7 @@ export function Sidebar() {
 
       <div className="sidebar-footer">
         <div className="system-status-pill">
-          <span className="status-dot"></span>
-          <span>System Online</span>
+          <span>Monitoring status is shown on the dashboard</span>
         </div>
         <span>v1.0.0</span>
       </div>

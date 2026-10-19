@@ -47,16 +47,23 @@ const reportForResponse = (report, reviewer) => {
 // Submit a citizen report.
 const createCitizenReport = async (req, res) => {
   try {
+    const body = req.body;
+    if (!body || typeof body !== "object" || Array.isArray(body)) {
+      return res.status(400).json({
+        message: "location, reportType, and description are required",
+      });
+    }
+
     const {
       location,
       reportType,
       description,
       severity,
-    } = req.body;
+    } = body;
 
     // Reports belong to the authenticated caller.
     // Only ADMIN may submit on behalf of another user.
-    const reportedBy = req.body.reportedBy || req.user.userId;
+    const reportedBy = body.reportedBy || req.user.userId;
 
     if (
       String(reportedBy) !== String(req.user.userId) &&
@@ -72,6 +79,48 @@ const createCitizenReport = async (req, res) => {
       return res.status(400).json({
         message:
           "location, reportType, and description are required",
+      });
+    }
+
+    if (
+      typeof location !== "string" ||
+      !mongoose.isValidObjectId(location)
+    ) {
+      return res.status(400).json({
+        message: "location must be a valid traffic location ID",
+      });
+    }
+
+    const validReportTypes =
+      CitizenReport.schema.path("reportType").enumValues;
+    if (
+      typeof reportType !== "string" ||
+      !validReportTypes.includes(reportType)
+    ) {
+      return res.status(400).json({
+        message: `reportType must be one of: ${validReportTypes.join(", ")}`,
+      });
+    }
+
+    if (typeof description !== "string" || !description.trim()) {
+      return res.status(400).json({
+        message: "description must not be empty",
+      });
+    }
+
+    const validSeverities = CitizenReport.schema.path("severity").enumValues;
+    if (severity !== undefined && !validSeverities.includes(severity)) {
+      return res.status(400).json({
+        message: `severity must be one of: ${validSeverities.join(", ")}`,
+      });
+    }
+
+    if (
+      typeof reportedBy !== "string" ||
+      !mongoose.isValidObjectId(reportedBy)
+    ) {
+      return res.status(400).json({
+        message: "reportedBy must be a valid user ID",
       });
     }
 

@@ -9,6 +9,7 @@ const CongestionEvent = require("../models/CongestionEvent");
 const TrafficAlert = require("../models/TrafficAlert");
 const processingService = require("../services/trafficMeasurementProcessingService");
 const { trafficMeasurementRecoveryWorker } = require("../services/trafficMeasurementRecoveryWorker");
+const { createTrafficSimulator } = require("../services/trafficSimulatorService");
 const { createTrafficMeasurement } = require("../controllers/trafficMeasurementController");
 
 const MEASUREMENT_ID = "507f1f77bcf86cd799439011";
@@ -54,9 +55,19 @@ function stubProcessingModels({
     const alert = alertsByEvent.get(String(id));
     return status === "ACTIVE" && alert?.status === "ACTIVE" ? alert : null;
   });
-  mock.method(TrafficAlert, "find", async ({ congestionEvent: id, status }) => {
-    const alert = alertsByEvent.get(String(id));
-    return status === "ACTIVE" && alert?.status === "ACTIVE" ? [alert] : [];
+  mock.method(TrafficAlert, "find", async (filter) => {
+    if (filter.location) {
+      return [...alertsByEvent.values()].filter(
+        (alert) =>
+          String(alert.location) === String(filter.location) &&
+          alert.alertType === filter.alertType &&
+          alert.status === filter.status
+      );
+    }
+    const alert = alertsByEvent.get(String(filter.congestionEvent));
+    return filter.status === "ACTIVE" && alert?.status === "ACTIVE"
+      ? [alert]
+      : [];
   });
   mock.method(CongestionEvent.prototype, "save", async function () {
     eventSaveCount += 1;
@@ -75,6 +86,9 @@ function stubProcessingModels({
     measurement,
     eventsByLocation,
     alertsByEvent,
+    updateMeasurement(values) {
+      Object.assign(measurement, values);
+    },
     get eventSaveCount() {
       return eventSaveCount;
     },
@@ -144,6 +158,94 @@ describe("automatic traffic measurement processing", () => {
     assert.equal(repeated.alertCreated, false);
     assert.equal(models.eventSaveCount, 1);
     assert.equal(models.alertSaveCount, 1);
+  });
+
+  test("recovery scenario resolves the event and alert through shared ingestion and processing", async () => {
+    const models = stubProcessingModels({
+      vehicleCount: 115,
+      averageSpeed: 12,
+    });
+    const storedMeasurements = [];
+    mock.method(TrafficMeasurement.prototype, "save", async function () {
+      models.updateMeasurement({
+        _id: this._id,
+        location: this.location,
+        vehicleCount: this.vehicleCount,
+        averageSpeed: this.averageSpeed,
+      });
+      storedMeasurements.push(this);
+      return this;
+    });
+    mock.method(
+      trafficMeasurementRecoveryWorker,
+      "processMeasurementNow",
+      async (measurementId) =>
+        processingService.processTrafficMeasurement(measurementId)
+    );
+    const location = { _id: LOCATION_ID, status: "ACTIVE" };
+    const device = {
+      _id: DEVICE_ID,
+      deviceId: "STM-TEST-SENSOR",
+      deviceType: "TRAFFIC_SENSOR",
+      status: "ACTIVE",
+      location: LOCATION_ID,
+    };
+    const query = (result) => ({
+      select() {
+        return this;
+      },
+      sort() {
+        return this;
+      },
+      limit() {
+        return this;
+      },
+      lean: async () => result,
+    });
+    const simulator = createTrafficSimulator({
+      environment: {
+        NODE_ENV: "development",
+        STM_TRAFFIC_SIMULATOR_ENABLED: "YES",
+        STM_TRAFFIC_SIMULATOR_INTERVAL_MS: "5000",
+        STM_TRAFFIC_SIMULATOR_DEVICE_COUNT: "1",
+        STM_TRAFFIC_SIMULATOR_SCENARIO: "recovery",
+        STM_TEST_DATABASE_NAME: "stm_test",
+        STM_TEST_DATA_CONFIRM: "YES",
+        MONGO_URI: "mongodb://127.0.0.1:27017/stm_test",
+      },
+      LocationModel: { find: () => query([location]) },
+      DeviceModel: { find: () => query([device]) },
+      recordMeasurement: undefined,
+      randomSource: () => 0.5,
+      getDatabaseName: () => "stm_test",
+      logger: { info() {}, warn() {}, error() {} },
+      setIntervalFunction: () => ({ simulatorTimer: true }),
+      clearIntervalFunction() {},
+    });
+
+    try {
+      assert.equal(await simulator.start(), true);
+      assert.equal(storedMeasurements[0].trafficDensity, "SEVERE");
+
+      const event = models.eventsByLocation.get(LOCATION_ID);
+      const alert = models.alertsByEvent.get(String(event._id));
+      assert.ok(event);
+      assert.ok(alert);
+      assert.equal(event.status, "ACTIVE");
+      assert.equal(alert.status, "ACTIVE");
+
+      await simulator.runTick();
+      await simulator.runTick();
+      await simulator.runTick();
+
+      assert.equal(storedMeasurements.at(-1).trafficDensity, "MEDIUM");
+      assert.equal(event.status, "RESOLVED");
+      assert.equal(alert.status, "RESOLVED");
+      assert.equal(models.eventSaveCount, 2);
+      assert.equal(models.alertSaveCount, 2);
+    } finally {
+      await simulator.stop();
+    }
   });
 
   test("non-congested measurements do not create events or alerts", async () => {

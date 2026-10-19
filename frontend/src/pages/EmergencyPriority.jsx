@@ -73,6 +73,19 @@ export function EmergencyPriority() {
     event.preventDefault();
     if (submittingRef.current || !canActivate || !selectedVehicleId) return;
 
+    const selectedVehicle = vehicles.find(
+      (vehicle) => vehicle._id === selectedVehicleId
+    );
+    if (
+      !window.confirm(
+        `Activate emergency priority for ${
+          selectedVehicle?.vehicleId || "the selected vehicle"
+        }? This sets the active signal at its current location to emergency priority.`
+      )
+    ) {
+      return;
+    }
+
     submittingRef.current = true;
     setSubmitting(true);
     setSubmitError("");

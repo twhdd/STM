@@ -302,6 +302,18 @@ describe("role-based authorization", () => {
 // Real responses for permitted access (model methods stubbed)
 // ---------------------------------------------------------------------------
 describe("permitted access returns the existing response contract", () => {
+  test("login returns the existing invalid-credentials response when the account is absent", async () => {
+    mock.method(User, "findOne", async () => null);
+
+    const res = await call("POST", "/api/auth/login", {
+      body: { email: "missing@example.com", password: "correct-password" },
+    });
+    assert.equal(res.status, 401);
+    assert.equal(res.body.success, false);
+    assert.equal(res.body.message, "Invalid email or password");
+    assert.equal(res.body.token, undefined);
+  });
+
   test("CITIZEN can read traffic locations (200, {count, locations})", async () => {
     const rows = [{ _id: ID, name: "Junction A", area: "Zone 1" }];
     mock.method(TrafficLocation, "find", () => query(rows));
@@ -461,6 +473,40 @@ describe("citizen report ownership", () => {
     const res = await call("POST", "/api/citizen-reports", { token: tokenFor("CITIZEN", ID), body: report });
     assert.equal(res.status, 201);
     assert.equal(String(saved[0].reportedBy), ID);
+  });
+
+  test("missing request body returns 400 without saving a report", async () => {
+    const saved = captureSave();
+    const res = await call("POST", "/api/citizen-reports", {
+      token: tokenFor("CITIZEN", ID),
+    });
+
+    assert.equal(res.status, 400);
+    assert.equal(
+      res.body.message,
+      "location, reportType, and description are required"
+    );
+    assert.equal(saved.length, 0);
+  });
+
+  test("invalid report fields return 400 without saving a report", async () => {
+    const saved = captureSave();
+    const invalidReports = [
+      { ...report, location: "not-a-location-id" },
+      { ...report, reportType: "UNSUPPORTED" },
+      { ...report, description: "   " },
+      { ...report, severity: "CRITICAL" },
+    ];
+
+    for (const invalidReport of invalidReports) {
+      const res = await call("POST", "/api/citizen-reports", {
+        token: tokenFor("CITIZEN", ID),
+        body: invalidReport,
+      });
+      assert.equal(res.status, 400);
+    }
+
+    assert.equal(saved.length, 0);
   });
 
   test("a citizen cannot file a report as another user -> 403", async () => {

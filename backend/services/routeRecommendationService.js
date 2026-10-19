@@ -1,4 +1,11 @@
+const mongoose = require("mongoose");
 const Route = require("../models/Route");
+
+function createRecommendationError(message, statusCode) {
+  const error = new Error(message);
+  error.statusCode = statusCode;
+  return error;
+}
 
 // Traffic levels ranked from best to worst
 const trafficScore = {
@@ -10,6 +17,18 @@ const trafficScore = {
 
 // Recommend the best route between two locations
 const recommendRoute = async (startLocation, endLocation) => {
+  if (
+    typeof startLocation !== "string" ||
+    !mongoose.isValidObjectId(startLocation) ||
+    typeof endLocation !== "string" ||
+    !mongoose.isValidObjectId(endLocation)
+  ) {
+    throw createRecommendationError(
+      "startLocation and endLocation must be valid location IDs",
+      400
+    );
+  }
+
   const routes = await Route.find({
     startLocation,
     endLocation,
@@ -17,7 +36,7 @@ const recommendRoute = async (startLocation, endLocation) => {
   });
 
   if (routes.length === 0) {
-    throw new Error("No available routes found");
+    throw createRecommendationError("No available routes found", 404);
   }
 
   // Sort routes by traffic level first, then estimated travel time

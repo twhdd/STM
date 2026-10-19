@@ -11,6 +11,13 @@ function getLocationName(location) {
   return "Location unavailable";
 }
 
+function getLocationId(location) {
+  if (location && typeof location === "object" && location._id) {
+    return String(location._id);
+  }
+  return typeof location === "string" ? location : "";
+}
+
 function formatMeasuredAt(value) {
   if (!value) return "Time unavailable";
   const date = new Date(value);
@@ -35,7 +42,13 @@ export function SignalOptimization() {
   const canLoadOptimizationData = canViewSignals && canAccessOptimization;
   const canOptimize = hasRole(user?.role, roleAccess.actions.optimizeSignal);
   const selectedSignal = signals.find((signal) => signal._id === signalId);
-  const selectedMeasurement = measurements.find(
+  const selectedSignalLocationId = getLocationId(selectedSignal?.location);
+  const availableMeasurements = selectedSignalLocationId
+    ? measurements.filter(
+        (measurement) => getLocationId(measurement.location) === selectedSignalLocationId
+      )
+    : [];
+  const selectedMeasurement = availableMeasurements.find(
     (measurement) => measurement._id === measurementId
   );
 
@@ -225,6 +238,12 @@ export function SignalOptimization() {
           </div>
         )}
 
+        {signalId && !noMeasurements && availableMeasurements.length === 0 && (
+          <div className="alert-banner alert-warning" role="status">
+            No traffic measurements are available for the selected signal's location.
+          </div>
+        )}
+
         {!canOptimize && (
           <div className="alert-banner alert-warning" role="note">
             <div>
@@ -245,6 +264,7 @@ export function SignalOptimization() {
               value={signalId}
               onChange={(event) => {
                 setSignalId(event.target.value);
+                setMeasurementId("");
                 setResult(null);
                 setSubmitError("");
               }}
@@ -279,11 +299,13 @@ export function SignalOptimization() {
                 setResult(null);
                 setSubmitError("");
               }}
-              disabled={noMeasurements || submitting}
+              disabled={!signalId || availableMeasurements.length === 0 || submitting}
               required
             >
-              <option value="">Choose a measurement</option>
-              {measurements.map((measurement) => (
+              <option value="">
+                {signalId ? "Choose a measurement" : "Choose a signal first"}
+              </option>
+              {availableMeasurements.map((measurement) => (
                 <option key={measurement._id} value={measurement._id}>
                   {getLocationName(measurement.location)} — {measurement.vehicleCount} vehicles,{" "}
                   {measurement.averageSpeed} average speed, {measurement.trafficDensity} density
@@ -315,7 +337,7 @@ export function SignalOptimization() {
                 submitting ||
                 !canOptimize ||
                 noSignals ||
-                noMeasurements ||
+                availableMeasurements.length === 0 ||
                 !signalId ||
                 !measurementId
               }

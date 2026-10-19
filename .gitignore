@@ -10,3 +10,28 @@ build/
 .DS_Store
 Thumbs.db
 .vscode/
+
+# Python environments and bytecode
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Locally stored computer-vision models, videos, and generated output
+ai-service/models/
+ai-service/weights/
+ai-service/videos/
+ai-service/outputs/
+ai-service/**/*.pt
+ai-service/**/*.pth
+ai-service/**/*.onnx
+ai-service/**/*.engine
+ai-service/**/*.torchscript
+ai-service/**/*.tflite
+ai-service/**/*.pb
+ai-service/**/*.mlmodel
+ai-service/**/*.weights
+ai-service/**/*.mp4
+ai-service/**/*.avi
+ai-service/**/*.mov
+ai-service/**/*.mkv

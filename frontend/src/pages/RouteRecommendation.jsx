@@ -14,6 +14,23 @@ function formatTraffic(level) {
   return level ? level.charAt(0) + level.slice(1).toLowerCase() : "Unknown";
 }
 
+function getLocationId(location) {
+  if (location && typeof location === "object" && location._id) {
+    return String(location._id);
+  }
+  return typeof location === "string" ? location : "";
+}
+
+function uniqueLocations(routes, field) {
+  const locations = new Map();
+  for (const route of routes) {
+    const location = route[field];
+    const id = getLocationId(location);
+    if (id) locations.set(id, location);
+  }
+  return [...locations.values()];
+}
+
 function RouteCard({ route, recommended = false }) {
   return (
     <article className={`route-result-card${recommended ? " route-result-best" : ""}`}>
@@ -55,10 +72,10 @@ function RouteCard({ route, recommended = false }) {
 }
 
 export function RouteRecommendation() {
-  const [locations, setLocations] = useState([]);
-  const [locationsLoading, setLocationsLoading] = useState(true);
-  const [locationsError, setLocationsError] = useState("");
-  const [locationsRefreshIndex, setLocationsRefreshIndex] = useState(0);
+  const [routes, setRoutes] = useState([]);
+  const [routesLoading, setRoutesLoading] = useState(true);
+  const [routesError, setRoutesError] = useState("");
+  const [routesRefreshIndex, setRoutesRefreshIndex] = useState(0);
   const [startLocation, setStartLocation] = useState("");
   const [endLocation, setEndLocation] = useState("");
   const [result, setResult] = useState(null);
@@ -68,43 +85,42 @@ export function RouteRecommendation() {
   useEffect(() => {
     let cancelled = false;
 
-    async function loadLocations() {
-      setLocationsLoading(true);
-      setLocationsError("");
+    async function loadRoutes() {
+      setRoutesLoading(true);
+      setRoutesError("");
 
       try {
-        const response = await api.get("/traffic-locations");
-        const availableLocations = Array.isArray(response?.locations)
-          ? response.locations.filter((location) => location.status !== "INACTIVE")
-          : [];
+        const response = await api.get("/routes");
+        if (!Array.isArray(response?.routes)) {
+          throw new Error("The server returned an invalid routes response.");
+        }
 
         if (!cancelled) {
-          setLocations(availableLocations);
-          setStartLocation((current) =>
-            availableLocations.some((location) => location._id === current)
-              ? current
-              : ""
-          );
-          setEndLocation((current) =>
-            availableLocations.some((location) => location._id === current)
-              ? current
-              : ""
-          );
+          setRoutes(response.routes);
         }
       } catch (err) {
         if (!cancelled) {
-          setLocationsError(err.message || "Could not load traffic locations.");
+          setRoutesError(err.message || "Could not load stored routes.");
         }
       } finally {
-        if (!cancelled) setLocationsLoading(false);
+        if (!cancelled) setRoutesLoading(false);
       }
     }
 
-    loadLocations();
+    loadRoutes();
     return () => {
       cancelled = true;
     };
-  }, [locationsRefreshIndex]);
+  }, [routesRefreshIndex]);
+
+  const availableRoutes = routes.filter((route) => route.status !== "BLOCKED");
+  const startLocations = uniqueLocations(availableRoutes, "startLocation");
+  const endLocations = uniqueLocations(
+    availableRoutes.filter(
+      (route) => getLocationId(route.startLocation) === startLocation
+    ),
+    "endLocation"
+  );
 
   async function handleSubmit(event) {
     event.preventDefault();
@@ -135,7 +151,7 @@ export function RouteRecommendation() {
 
       setResult(response);
     } catch (err) {
-      setError(err.message || "Unable to calculate a route. Please try again.");
+      setError(err.message || "Unable to recommend a stored route. Please try again.");
     } finally {
       setLoading(false);
     }
@@ -153,8 +169,8 @@ export function RouteRecommendation() {
       <div className="page-header">
         <h2 className="page-title">Route Recommendation</h2>
         <p className="page-description">
-          Find an available route between two traffic locations, prioritizing
-          lower congestion and then shorter estimated travel time.
+          Compare predefined routes between locations. The backend ranks stored,
+          non-blocked routes by traffic level and estimated travel time.
         </p>
       </div>
 
@@ -163,23 +179,23 @@ export function RouteRecommendation() {
           <div>
             <h3 className="card-title">Plan a Route</h3>
             <p className="card-subtitle">
-              Choose your origin and destination to compare available routes.
+              Choose an origin and destination with a stored route.
             </p>
           </div>
         </div>
 
         <div className="card-body">
-          {locationsError && (
+          {routesError && (
             <div className="alert-banner alert-danger" role="alert">
               <div>
-                <strong>Could not load locations.</strong> {locationsError}
+                <strong>Could not load stored routes.</strong> {routesError}
                 <button
                   type="button"
                   className="btn-refresh"
-                  onClick={() => setLocationsRefreshIndex((current) => current + 1)}
-                  disabled={locationsLoading}
+                  onClick={() => setRoutesRefreshIndex((current) => current + 1)}
+                  disabled={routesLoading}
                 >
-                  Retry loading locations
+                  Retry loading routes
                 </button>
               </div>
             </div>
@@ -194,15 +210,20 @@ export function RouteRecommendation() {
                 id="route-start"
                 className="form-input"
                 value={startLocation}
-                onChange={(event) => setStartLocation(event.target.value)}
-                disabled={locationsLoading || locations.length === 0 || loading}
+                onChange={(event) => {
+                  setStartLocation(event.target.value);
+                  setEndLocation("");
+                  setResult(null);
+                  setError("");
+                }}
+                disabled={routesLoading || startLocations.length === 0 || loading}
                 required
               >
                 <option value="">
-                  {locationsLoading ? "Loading locations..." : "Choose origin"}
+                  {routesLoading ? "Loading stored routes..." : "Choose origin"}
                 </option>
-                {locations.map((location) => (
-                  <option key={location._id} value={location._id}>
+                {startLocations.map((location) => (
+                  <option key={getLocationId(location)} value={getLocationId(location)}>
                     {location.name} — {location.area}
                   </option>
                 ))}
@@ -219,13 +240,19 @@ export function RouteRecommendation() {
                 id="route-end"
                 className="form-input"
                 value={endLocation}
-                onChange={(event) => setEndLocation(event.target.value)}
-                disabled={locationsLoading || locations.length === 0 || loading}
+                onChange={(event) => {
+                  setEndLocation(event.target.value);
+                  setResult(null);
+                  setError("");
+                }}
+                disabled={routesLoading || !startLocation || endLocations.length === 0 || loading}
                 required
               >
-                <option value="">Choose destination</option>
-                {locations.map((location) => (
-                  <option key={location._id} value={location._id}>
+                <option value="">
+                  {startLocation ? "Choose destination" : "Choose an origin first"}
+                </option>
+                {endLocations.map((location) => (
+                  <option key={getLocationId(location)} value={getLocationId(location)}>
                     {location.name} — {location.area}
                   </option>
                 ))}
@@ -238,13 +265,14 @@ export function RouteRecommendation() {
                 className="btn-primary"
                 disabled={
                   loading ||
-                  locationsLoading ||
-                  locations.length < 2 ||
+                  routesLoading ||
+                  startLocations.length === 0 ||
+                  endLocations.length === 0 ||
                   !startLocation ||
                   !endLocation
                 }
               >
-                {loading ? "Finding route..." : "Find Best Route"}
+                {loading ? "Finding stored route..." : "Recommend Stored Route"}
               </button>
               <button
                 type="button"
@@ -257,9 +285,14 @@ export function RouteRecommendation() {
             </div>
           </form>
 
-          {!locationsLoading && !locationsError && locations.length < 2 && (
+          {!routesLoading && !routesError && startLocations.length === 0 && (
             <p className="route-helper-text">
-              At least two active traffic locations are needed to plan a route.
+              No non-blocked stored routes are available.
+            </p>
+          )}
+          {!routesLoading && !routesError && startLocation && endLocations.length === 0 && (
+            <p className="route-helper-text">
+              No non-blocked stored destinations are available from the selected origin.
             </p>
           )}
         </div>
@@ -274,7 +307,7 @@ export function RouteRecommendation() {
       {loading && (
         <div className="card loading-card route-feedback" role="status">
           <div className="auth-loading-spinner" />
-          <p>Comparing available routes...</p>
+          <p>Comparing stored routes...</p>
         </div>
       )}
 
@@ -282,7 +315,7 @@ export function RouteRecommendation() {
         <section className="route-results-section" aria-live="polite">
           <div className="route-results-heading">
             <div>
-              <h3 className="card-title">Your Route Results</h3>
+              <h3 className="card-title">Stored Route Results</h3>
               <p className="card-subtitle">
                 {result.alternatives?.length || 0} alternative route(s) found
               </p>
