@@ -59,6 +59,7 @@ function createTrafficVisionWorker({
   }
 
   async function cleanupAttempt(jobId, token) {
+    if (!jobId || !token || typeof token !== "string") return;
     const directory = path.join(config.outputsDirectory, String(jobId));
     const attemptPath = path.join(directory, token);
     if (!privatePathIsWithin(config.outputsDirectory, attemptPath)) return;
@@ -143,17 +144,26 @@ function createTrafficVisionWorker({
       const paths = [job.uploadPath, job.resultPath, job.annotatedPath].filter(
         Boolean
       );
+      let cleanupFailed = false;
       for (const filePath of paths) {
         const parent = filePath === job.uploadPath
           ? config.uploadsDirectory
           : path.join(config.outputsDirectory, String(job._id));
         if (!privatePathIsWithin(parent, filePath)) continue;
-        await fs.unlink(filePath).catch((error) => {
+        try {
+          await fs.unlink(filePath);
+        } catch (error) {
           if (error.code !== "ENOENT") {
-            logger.error("Unable to remove expired computer-vision file.");
+            cleanupFailed = true;
+            logger.error("Unable to remove expired computer-vision file.", error);
           }
-        });
+        }
       }
+      if (cleanupFailed) {
+        continue;
+      }
+      const jobOutputDir = path.join(config.outputsDirectory, String(job._id));
+      await fs.rm(jobOutputDir, { recursive: true, force: true }).catch(() => {});
       await Job.updateOne(
         {
           _id: job._id,
@@ -318,7 +328,7 @@ function createTrafficVisionWorker({
       await fs.mkdir(attemptPath, { recursive: true, mode: 0o700 });
       const resultPath = path.join(attemptPath, "result.json");
       const annotationPath = path.join(attemptPath, "annotated.mp4");
-      const tracking = true;
+      const tracking = Boolean(job.tracking);
       const heartbeat = async () => {
         try {
           const result = await Job.updateOne(

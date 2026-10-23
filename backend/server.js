@@ -28,6 +28,9 @@ const trafficAlertRoutes = require("./routes/trafficAlertRoutes");
 const trafficAnalyticsRoutes = require("./routes/trafficAnalyticsRoutes");
 const congestionEventRoutes = require("./routes/congestionEventRoutes");
 const citizenReportRoutes = require("./routes/citizenReportRoutes");
+const trafficVisionRoutes = require("./routes/trafficVisionRoutes");
+const { trafficVisionWorker } = require("./services/trafficVisionWorker");
+const { trafficVisionRealtimeService } = require("./services/trafficVisionRealtimeService");
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -83,6 +86,9 @@ app.use("/api/congestion-events", congestionEventRoutes);
 // Citizen report routes
 app.use("/api/citizen-reports", citizenReportRoutes);
 
+// Computer vision routes
+app.use("/api/traffic-vision", trafficVisionRoutes);
+
 // Root endpoint (PUBLIC on purpose: static banner, no data; useful as a liveness probe)
 app.get("/", (req, res) => {
   res.json({
@@ -100,25 +106,34 @@ app.get("/api/health", (req, res) => {
 });
 
 // Start server
-const startServer = async ({
-  port = PORT,
-  connectDatabase = connectDB,
-  ensureLifecycleIndexes = ensureCongestionLifecycleIndexes,
-  recoveryWorker = trafficMeasurementRecoveryWorker,
-  simulator = trafficSimulator,
-  socketServerFactory = createSocketServer,
-  realtime = realtimeService,
-  appInstance = app,
-  registerSignalHandlers = true,
-} = {}) => {
+const startServer = async (options = {}) => {
+  const {
+    port = PORT,
+    connectDatabase = connectDB,
+    ensureLifecycleIndexes = ensureCongestionLifecycleIndexes,
+    recoveryWorker = trafficMeasurementRecoveryWorker,
+    visionWorker = trafficVisionWorker,
+    simulator = trafficSimulator,
+    socketServerFactory = createSocketServer,
+    realtime = realtimeService,
+    trafficVisionRealtime = trafficVisionRealtimeService,
+    appInstance = app,
+    registerSignalHandlers = true,
+  } = options;
   let shutdownPromise;
   await connectDatabase();
   await ensureLifecycleIndexes();
   await recoveryWorker.start();
+  if (visionWorker && (mongoose.connection.readyState !== 0 || options.visionWorker)) {
+    await visionWorker.start();
+  }
 
   httpServer = http.createServer(appInstance);
   socketServer = socketServerFactory(httpServer);
   realtime.attach(socketServer);
+  if (trafficVisionRealtime && (mongoose.connection.readyState !== 0 || options.trafficVisionRealtime)) {
+    trafficVisionRealtime.attach(socketServer);
+  }
 
   await new Promise((resolve, reject) => {
     httpServer.once("error", reject);
@@ -145,6 +160,9 @@ const startServer = async ({
       };
 
       await attempt(() => simulator.stop());
+      if (visionWorker && (mongoose.connection.readyState !== 0 || options.visionWorker)) {
+        await attempt(() => visionWorker.stop());
+      }
       if (socketServer) {
         const closingSocketServer = socketServer;
         await attempt(
@@ -156,6 +174,9 @@ const startServer = async ({
             )
         );
         realtime.detach(closingSocketServer);
+        if (trafficVisionRealtime) {
+          trafficVisionRealtime.detach(closingSocketServer);
+        }
         socketServer = null;
       } else if (httpServer?.listening) {
         await attempt(

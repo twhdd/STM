@@ -4,6 +4,8 @@ import { useAuth } from "../context/useAuth";
 import { hasRole, roleAccess } from "../config/roleAccess";
 import { REALTIME_EVENTS, subscribeToRealtimeEvents } from "../services/realtime";
 import { formatMeasurementSource } from "../utils/trafficMeasurementDisplay";
+import "../styles/trafficVision.css";
+import TrafficVisionView from "../components/trafficVision/TrafficVisionView";
 
 function formatDateTime(dateStr) {
   if (!dateStr) return "—";
@@ -37,6 +39,7 @@ export function TrafficMonitoring() {
   const [error, setError] = useState(null);
   const [feedErrors, setFeedErrors] = useState([]);
   const [refreshIndex, setRefreshIndex] = useState(0);
+  const [activeTab, setActiveTab] = useState("telemetry");
   const [realtimeStatus, setRealtimeStatus] = useState("disconnected");
   const realtimeRefreshTimer = useRef(null);
 
@@ -279,7 +282,34 @@ export function TrafficMonitoring() {
         </p>
       </div>
 
-      {feedErrors.length > 0 && (
+      {/* View Mode Tabs */}
+      <div className="cv-tabs-nav" role="tablist" aria-label="Traffic Monitoring Views">
+        <button
+          type="button"
+          role="tab"
+          aria-selected={activeTab === "telemetry"}
+          className={`cv-tab-btn ${activeTab === "telemetry" ? "active" : ""}`}
+          onClick={() => setActiveTab("telemetry")}
+        >
+          <span>📡 Sensor Telemetry</span>
+          <span className="cv-tab-badge">{measurements.length}</span>
+        </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={activeTab === "videoAnalysis"}
+          className={`cv-tab-btn ${activeTab === "videoAnalysis" ? "active" : ""}`}
+          onClick={() => setActiveTab("videoAnalysis")}
+        >
+          <span>📹 Video AI Analysis (CV)</span>
+        </button>
+      </div>
+
+      {activeTab === "videoAnalysis" ? (
+        <TrafficVisionView />
+      ) : (
+        <>
+          {feedErrors.length > 0 && (
         <div className="alert-banner alert-danger" role="alert">
           <div>
             <strong>Some monitoring data could not be loaded.</strong>
@@ -653,6 +683,8 @@ export function TrafficMonitoring() {
           )}
         </div>
       </div>
+        </>
+      )}
     </div>
   );
 }

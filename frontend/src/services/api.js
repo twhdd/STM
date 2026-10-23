@@ -87,9 +87,10 @@ async function request(endpoint, options = {}) {
   const config = { ...options, headers };
   if (config.body !== undefined && config.body !== null) {
     const isFormData = typeof FormData !== "undefined" && config.body instanceof FormData;
+    const isBlob = typeof Blob !== "undefined" && config.body instanceof Blob;
     const isBodyString = typeof config.body === "string";
 
-    if (typeof config.body === "object" && !isFormData) {
+    if (typeof config.body === "object" && !isFormData && !isBlob) {
       config.body = JSON.stringify(config.body);
       if (!headers.has("Content-Type")) {
         headers.set("Content-Type", "application/json");

@@ -90,6 +90,13 @@ const MATRIX = {
     "TRAFFIC_AUTHORITY",
     "TRAFFIC_POLICE",
   ],
+
+  "POST /api/traffic-vision/jobs": "AUTH",
+  "GET /api/traffic-vision/jobs": "AUTH",
+  "GET /api/traffic-vision/jobs/:id": "AUTH",
+  "GET /api/traffic-vision/jobs/:id/results": "AUTH",
+  "GET /api/traffic-vision/jobs/:id/annotated-video": "AUTH",
+  "GET /api/traffic-vision/jobs/:id/result-file": "AUTH",
 };
 
 // Endpoints defined directly in server.js (not in a router file)

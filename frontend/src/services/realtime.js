@@ -6,6 +6,7 @@ export const REALTIME_EVENTS = Object.freeze({
   CONGESTION_CLEARED: "congestion-cleared",
   ALERT_CREATED: "alert-created",
   ALERT_RESOLVED: "alert-resolved",
+  TRAFFIC_VISION_STATUS: "traffic-vision:status",
 });
 
 function getSocketEndpoint() {
