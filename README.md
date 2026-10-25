@@ -235,7 +235,36 @@ Use separate terminals.
 
 The frontend calls the API directly via `VITE_API_BASE_URL`; there is no dev proxy. The backend enables CORS for all origins.
 
-You need user accounts to sign in. Public registration creates `CITIZEN` accounts; staff accounts come from an Admin (`POST /api/auth/users`) or from the development seed scripts, which **write to the database** (see [safety](#database-and-test-data-safety)).
+You need user accounts to sign in. Public registration creates `CITIZEN` accounts; staff accounts come from an Admin (`POST /api/auth/users`) or from the development seed scripts, which **write to the database** (see [safety](#database-and-test-data-safety)). A fresh database has no Admin, so the steps below create the test accounts.
+
+### First run on an empty test database
+
+> **These steps write to MongoDB.** Run them only against a dedicated test database. The seed scripts refuse to run unless the guards below are set, and `seed:test-data` accepts only the database name `stm_test`. Neither script deletes or drops anything, and neither resets an existing password or role.
+
+1. Start the backend once to confirm it connects: `npm run dev` in `backend/`, then open `http://localhost:5000/api/health`. Stop it again if you like; the seed scripts start their own temporary local server.
+2. Create the five test accounts (one per role). In PowerShell, from `backend/`:
+
+   ```powershell
+   $env:NODE_ENV = "development"
+   $env:STM_TEST_DATABASE_NAME = "stm_test"
+   $env:STM_TEST_ACCOUNTS_CONFIRM = "YES"
+   $env:STM_TEST_ACCOUNT_PASSWORD = "<choose a password: 16+ characters with lower, upper, digit and symbol>"
+   npm run seed:test-accounts
+   Remove-Item Env:STM_TEST_ACCOUNT_PASSWORD, Env:STM_TEST_ACCOUNTS_CONFIRM
+   ```
+
+   The accounts are `stm.admin.test@`, `stm.authority.test@`, `stm.police.test@`, `stm.emergency.test@` and `stm.citizen.test@example.com`. The script logs in as each one to verify it and prints no password. Setting the password in the shell session (not in `.env`) keeps it out of the repository. If `MONGO_URI` contains a database name, it must equal `STM_TEST_DATABASE_NAME`.
+3. Optional, to populate the dashboards with sample locations, signals, devices, measurements, routes, vehicles, alerts and reports (the accounts must already exist):
+
+   ```powershell
+   $env:STM_TEST_DATA_CONFIRM = "YES"
+   npm run seed:test-data
+   Remove-Item Env:STM_TEST_DATA_CONFIRM
+   ```
+
+4. Start the backend (`npm run dev`) and the frontend (`npm run dev` in `frontend/`), open `http://localhost:5173` and sign in as `stm.admin.test@example.com` with the password you chose in step 2.
+
+On macOS/Linux, set the same variables with `export NAME=value` and clear them with `unset NAME`. To skip seeding, register a `CITIZEN` account in the UI instead; it can use only the citizen pages.
 
 ## User roles and permissions
 
