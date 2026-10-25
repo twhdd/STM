@@ -65,10 +65,12 @@ const MATRIX = {
   "GET /api/emergency-vehicles/:id": STAFF,
 
   "POST /api/emergency-priority/activate": ["ADMIN", "EMERGENCY_SERVICE"],
+  "POST /api/emergency-priority/deactivate": ["ADMIN", "EMERGENCY_SERVICE"],
 
   "POST /api/routes": ADMIN_TA,
   "GET /api/routes": "AUTH",
   "GET /api/routes/:id": "AUTH",
+  "PATCH /api/routes/:id/waypoints": ADMIN_TA,
 
   "POST /api/route-recommendation/recommend": "AUTH",
 
@@ -152,6 +154,9 @@ function query(result) {
   const q = {
     populate: () => q,
     select: () => q,
+    sort: () => q,
+    skip: () => q,
+    limit: () => q,
     then: (resolve, reject) => Promise.resolve(result).then(resolve, reject),
   };
   return q;
@@ -557,12 +562,17 @@ describe("citizen report ownership", () => {
 
   test("list: citizens see only their reports; staff roles see all reports", async () => {
     const filters = [];
+    const countFilters = [];
     mock.method(CitizenReport, "find", (filter) => {
       filters.push(filter);
       return query([
         { _id: ID, status: "SUBMITTED" },
         { _id: OTHER_ID, status: "UNDER_REVIEW" },
       ]);
+    });
+    mock.method(CitizenReport, "countDocuments", async (filter) => {
+      countFilters.push(filter);
+      return 2;
     });
 
     const citizen = await call("GET", "/api/citizen-reports", {
@@ -583,8 +593,10 @@ describe("citizen report ownership", () => {
 
     assert.deepEqual(filters[0], { reportedBy: ID });
     assert.deepEqual(filters.slice(1), [{}, {}, {}, {}]);
+    assert.deepEqual(countFilters, filters, "the total is scoped exactly like the page");
     assert.equal(emergency.status, 200);
     assert.equal(emergency.body.count, 2);
+    assert.deepEqual(emergency.body.pagination, { page: 1, limit: 50, total: 2, totalPages: 1 });
     assert.deepEqual(
       emergency.body.reports.map((item) => item.status),
       ["SUBMITTED", "UNDER_REVIEW"]

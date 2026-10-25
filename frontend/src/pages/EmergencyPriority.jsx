@@ -2,6 +2,11 @@ import { useEffect, useRef, useState } from "react";
 import api from "../services/api";
 import { useAuth } from "../context/useAuth";
 import { canAccessPage, hasRole, roleAccess } from "../config/roleAccess";
+import {
+  applyPriorityChange,
+  formatActiveSince,
+  priorityErrorMessage,
+} from "../utils/emergencyPriorityDisplay";
 import "./EmergencyPriority.css";
 
 function getLocationName(location) {
@@ -18,12 +23,16 @@ export function EmergencyPriority() {
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState("");
   const [result, setResult] = useState(null);
+  const [resultAction, setResultAction] = useState("activate");
+  const [submittingAction, setSubmittingAction] = useState("");
   const [refreshIndex, setRefreshIndex] = useState(0);
   const submittingRef = useRef(false);
   const canViewVehicles = hasRole(user?.role, roleAccess.endpoints.emergencyVehicles);
   const canAccessEmergencyPriority = canAccessPage(user?.role, "emergencyPriority");
   const canLoadEmergencyVehicles = canViewVehicles && canAccessEmergencyPriority;
   const canActivate = hasRole(user?.role, roleAccess.actions.activateEmergencyPriority);
+  const canDeactivate = hasRole(user?.role, roleAccess.actions.deactivateEmergencyPriority);
+  const selectedVehicle = vehicles.find((vehicle) => vehicle._id === selectedVehicleId);
 
   useEffect(() => {
     let cancelled = false;
@@ -69,61 +78,62 @@ export function EmergencyPriority() {
     };
   }, [canLoadEmergencyVehicles, refreshIndex]);
 
-  async function handleSubmit(event) {
-    event.preventDefault();
-    if (submittingRef.current || !canActivate || !selectedVehicleId) return;
+  async function runPriorityAction(action) {
+    const allowed = action === "activate" ? canActivate : canDeactivate;
+    if (submittingRef.current || !allowed || !selectedVehicleId) return;
 
-    const selectedVehicle = vehicles.find(
-      (vehicle) => vehicle._id === selectedVehicleId
-    );
-    if (
-      !window.confirm(
-        `Activate emergency priority for ${
-          selectedVehicle?.vehicleId || "the selected vehicle"
-        }? This sets the active signal at its current location to emergency priority.`
-      )
-    ) {
-      return;
-    }
+    const label = selectedVehicle?.vehicleId || "the selected vehicle";
+    const confirmation =
+      action === "activate"
+        ? `Activate emergency priority for ${label}? This sets the active signal at its current location to emergency priority.`
+        : `Deactivate emergency priority for ${label}? This restores the signal's saved phase and green time.`;
+    if (!window.confirm(confirmation)) return;
 
     submittingRef.current = true;
     setSubmitting(true);
+    setSubmittingAction(action);
     setSubmitError("");
     setResult(null);
 
     try {
-      const response = await api.post("/emergency-priority/activate", {
+      const response = await api.post(`/emergency-priority/${action}`, {
         vehicleId: selectedVehicleId,
       });
 
       if (
         !response?.vehicle ||
-        !response?.signal ||
-        typeof response.message !== "string"
+        typeof response.message !== "string" ||
+        (action === "activate" && !response.signal)
       ) {
         throw new Error("The server returned an invalid emergency priority response.");
       }
 
       setResult(response);
+      setResultAction(action);
       setVehicles((current) =>
-        current.map((vehicle) =>
-          vehicle._id === selectedVehicleId
-            ? { ...vehicle, priorityActive: response.vehicle.priorityActive }
-            : vehicle
-        )
+        applyPriorityChange(current, selectedVehicleId, {
+          priorityActive: response.vehicle.priorityActive,
+          activatedAt: response.vehicle.activatedAt,
+        })
       );
     } catch (error) {
-      setSubmitError(
-        error.status === 403
-          ? `Your account is not authorized to activate emergency priority. ${
-              error.message || "Only administrators and emergency service users may activate priority."
-            }`
-          : error.message || "Unable to activate emergency priority."
-      );
+      setSubmitError(priorityErrorMessage(error, action));
+      if (
+        error.status === 409 &&
+        ["PRIORITY_NOT_ACTIVE", "PRIORITY_ALREADY_ACTIVE"].includes(error.data?.code)
+      ) {
+        setRefreshIndex((current) => current + 1);
+      }
     } finally {
       submittingRef.current = false;
       setSubmitting(false);
+      setSubmittingAction("");
     }
+  }
+
+  function handleSubmit(event) {
+    event.preventDefault();
+    return runPriorityAction("activate");
   }
 
   return (
@@ -131,7 +141,7 @@ export function EmergencyPriority() {
       <div className="page-header">
         <h2 className="page-title">Emergency Priority</h2>
         <p className="page-description">
-          Activate signal priority for an emergency vehicle at its current location.
+          Activate or deactivate signal priority for an emergency vehicle at its current location.
         </p>
       </div>
 
@@ -175,14 +185,14 @@ export function EmergencyPriority() {
           <div className="card-header">
             <h3 className="card-title">Emergency Vehicles</h3>
             <p className="card-subtitle">
-              Select a vehicle to activate priority at its current location.
+              Select a vehicle to activate or deactivate priority at its current location.
             </p>
           </div>
 
           {!canActivate && (
             <div className="alert-banner alert-warning" role="note">
               <div>
-                Only administrators and emergency service users can activate priority.
+                Only administrators and emergency service users can activate or deactivate priority.
                 Your account does not have either role.
               </div>
             </div>
@@ -230,6 +240,16 @@ export function EmergencyPriority() {
                           <span className="emergency-vehicle-detail-label">Status</span>
                           <strong>{vehicle.status}</strong>
                         </span>
+                        {vehicle.priorityActive && (
+                          <span>
+                            <span className="emergency-vehicle-detail-label">
+                              Priority active since
+                            </span>
+                            <strong>
+                              {formatActiveSince(vehicle.activatedAt) || "Time not recorded"}
+                            </strong>
+                          </span>
+                        )}
                         <span className="emergency-vehicle-location">
                           <span className="emergency-vehicle-detail-label">Current location</span>
                           <strong>{getLocationName(vehicle.currentLocation)}</strong>
@@ -251,9 +271,26 @@ export function EmergencyPriority() {
               <button
                 type="submit"
                 className="btn-primary"
-                disabled={submitting || !canActivate || !selectedVehicleId}
+                disabled={
+                  submitting ||
+                  !canActivate ||
+                  !selectedVehicleId ||
+                  Boolean(selectedVehicle?.priorityActive)
+                }
               >
-                {submitting ? "Activating priority..." : "Activate Emergency Priority"}
+                {submittingAction === "activate"
+                  ? "Activating priority..."
+                  : "Activate Emergency Priority"}
+              </button>
+              <button
+                type="button"
+                className="btn-secondary"
+                onClick={() => runPriorityAction("deactivate")}
+                disabled={submitting || !canDeactivate || !selectedVehicle?.priorityActive}
+              >
+                {submittingAction === "deactivate"
+                  ? "Deactivating priority..."
+                  : "Deactivate Emergency Priority"}
               </button>
             </div>
           </form>
@@ -274,14 +311,36 @@ export function EmergencyPriority() {
                     </span>
                   </div>
                   <div>
-                    <span className="emergency-vehicle-detail-label">Signal</span>
-                    <strong>
-                      {result.signal.name} ({result.signal.signalId})
-                    </strong>
-                    <span>
-                      Phase: {result.signal.currentPhase} · Green time:{" "}
-                      {result.signal.greenTime} seconds
+                    <span className="emergency-vehicle-detail-label">
+                      {resultAction === "deactivate" ? "Signal after restore" : "Signal"}
                     </span>
+                    {result.signal ? (
+                      <>
+                        <strong>
+                          {result.signal.name} ({result.signal.signalId})
+                        </strong>
+                        <span>
+                          Phase: {result.signal.currentPhase} · Green time:{" "}
+                          {result.signal.greenTime} seconds
+                        </span>
+                        {resultAction === "activate" &&
+                          result.signal.previousPhase &&
+                          result.signal.previousGreenTime !== undefined && (
+                            <span>
+                              Saved for restore: {result.signal.previousPhase} ·{" "}
+                              {result.signal.previousGreenTime} seconds
+                            </span>
+                          )}
+                      </>
+                    ) : (
+                      <span>No signal was changed.</span>
+                    )}
+                    {result.fallback && (
+                      <span>
+                        No saved signal state existed for this older activation, so the
+                        phase was kept and only the green time was reset to the default.
+                      </span>
+                    )}
                   </div>
                 </div>
               </div>

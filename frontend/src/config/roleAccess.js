@@ -30,6 +30,7 @@ export const roleAccess = Object.freeze({
   actions: Object.freeze({
     optimizeSignal: signalOptimizerRoles,
     activateEmergencyPriority: emergencyPriorityRoles,
+    deactivateEmergencyPriority: emergencyPriorityRoles,
     generateTrafficAlert: signalOptimizerRoles,
     reviewCitizenReports: reportReviewerRoles,
   }),

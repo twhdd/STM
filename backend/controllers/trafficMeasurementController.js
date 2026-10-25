@@ -2,6 +2,12 @@ const TrafficMeasurement = require("../models/TrafficMeasurement");
 const MonitoringDevice = require("../models/MonitoringDevice");
 const TrafficLocation = require("../models/TrafficLocation");
 const trafficMeasurementIngestionService = require("../services/trafficMeasurementIngestionService");
+const {
+  buildPagination,
+  parseObjectIdFilter,
+  parsePagination,
+  sendQueryError,
+} = require("../utils/pagination");
 
 // Create a new traffic measurement
 const createTrafficMeasurement = async (req, res) => {
@@ -38,18 +44,32 @@ const createTrafficMeasurement = async (req, res) => {
   }
 };
 
-// Get all traffic measurements
+// Get traffic measurements, newest first, one page at a time
 const getTrafficMeasurements = async (req, res) => {
   try {
-    const measurements = await TrafficMeasurement.find()
-      .populate("device", "deviceId deviceType name status")
-      .populate("location", "name area latitude longitude");
+    const paging = parsePagination(req.query);
+    const filter = {};
+    const location = parseObjectIdFilter(req.query.location, "location");
+    if (location) filter.location = location;
+
+    const [total, measurements] = await Promise.all([
+      TrafficMeasurement.countDocuments(filter),
+      TrafficMeasurement.find(filter)
+        .sort({ measuredAt: -1, _id: -1 })
+        .skip(paging.skip)
+        .limit(paging.limit)
+        .populate("device", "deviceId deviceType name status")
+        .populate("location", "name area latitude longitude"),
+    ]);
 
     res.status(200).json({
       count: measurements.length,
+      pagination: buildPagination(paging, total),
       measurements,
     });
   } catch (error) {
+    if (sendQueryError(res, error)) return;
+
     res.status(500).json({
       message: "Failed to fetch traffic measurements",
       error: error.message,

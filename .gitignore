@@ -35,3 +35,11 @@ ai-service/**/*.mp4
 ai-service/**/*.avi
 ai-service/**/*.mov
 ai-service/**/*.mkv
+
+# Local test assets, inference outputs, and migration backups
+ai-service/test-assets/
+backend/backups/
+*.webm
+
+# Local Playwright MCP logs and snapshots
+.playwright-mcp/

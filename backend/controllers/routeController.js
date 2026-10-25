@@ -1,4 +1,5 @@
 const Route = require("../models/Route");
+const { updateRouteWaypoints } = require("../services/routeWaypointService");
 
 // Create a route
 const createRoute = async (req, res) => {
@@ -71,8 +72,35 @@ const getRouteById = async (req, res) => {
   }
 };
 
+// Replace a route's ordered waypoints (ADMIN, TRAFFIC_AUTHORITY via the route)
+const updateRouteWaypointList = async (req, res) => {
+  try {
+    const route = await updateRouteWaypoints(req.params.id, req.body);
+
+    res.status(200).json({
+      message: "Route waypoints updated successfully",
+      route,
+    });
+  } catch (error) {
+    if (error?.name === "RouteWaypointError") {
+      return res.status(error.statusCode).json({
+        message: error.message,
+        code: error.code,
+        ...error.details,
+      });
+    }
+
+    console.error("Failed to update route waypoints:", error);
+    res.status(500).json({
+      message: "Failed to update route waypoints",
+      code: "INTERNAL_ERROR",
+    });
+  }
+};
+
 module.exports = {
   createRoute,
   getRoutes,
   getRouteById,
+  updateRouteWaypointList,
 };

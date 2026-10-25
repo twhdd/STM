@@ -18,6 +18,15 @@ const calculateGreenTime = (vehicleCount, averageSpeed) => {
   return 20;
 };
 
+const overrideActiveError = () => {
+  const error = new Error(
+    "This signal is under an active emergency priority override and cannot be optimized"
+  );
+  error.statusCode = 409;
+  error.code = "EMERGENCY_OVERRIDE_ACTIVE";
+  return error;
+};
+
 // Optimize a traffic signal using a traffic measurement
 const optimizeSignal = async (signalId, measurementId) => {
   const signal = await TrafficSignal.findById(signalId);
@@ -31,6 +40,10 @@ const optimizeSignal = async (signalId, measurementId) => {
     throw new Error("Traffic measurement not found");
   }
 
+  if (signal.priorityOverride?.vehicle) {
+    throw overrideActiveError();
+  }
+
   const previousGreenTime = signal.greenTime;
 
   const optimalGreenTime = calculateGreenTime(
@@ -38,10 +51,16 @@ const optimizeSignal = async (signalId, measurementId) => {
     measurement.averageSpeed
   );
 
-  signal.greenTime = optimalGreenTime;
-  signal.lastOptimizedAt = new Date();
+  // Guarded write: refused if an emergency override was claimed after the read.
+  const updatedSignal = await TrafficSignal.findOneAndUpdate(
+    { _id: signal._id, "priorityOverride.vehicle": { $exists: false } },
+    { $set: { greenTime: optimalGreenTime, lastOptimizedAt: new Date() } },
+    { new: true }
+  );
 
-  const updatedSignal = await signal.save();
+  if (!updatedSignal) {
+    throw overrideActiveError();
+  }
 
   return {
     signal: updatedSignal,

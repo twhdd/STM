@@ -2,6 +2,14 @@ const CongestionEvent = require("../models/CongestionEvent");
 const {
   detectCongestion,
 } = require("../services/congestionDetectionService");
+const {
+  buildPagination,
+  parseEnumFilter,
+  parsePagination,
+  sendQueryError,
+} = require("../utils/pagination");
+
+const EVENT_STATUSES = ["ACTIVE", "RESOLVED"];
 
 // Detect congestion from a traffic measurement
 const runCongestionDetection = async (req, res) => {
@@ -25,21 +33,35 @@ const runCongestionDetection = async (req, res) => {
   }
 };
 
-// Get all congestion events
+// Get congestion events, newest first, one page at a time
 const getCongestionEvents = async (req, res) => {
   try {
-    const events = await CongestionEvent.find()
-      .populate("location", "name area latitude longitude")
-      .populate(
-        "measurement",
-        "vehicleCount averageSpeed trafficDensity measuredAt"
-      );
+    const paging = parsePagination(req.query);
+    const filter = {};
+    const status = parseEnumFilter(req.query.status, EVENT_STATUSES, "status");
+    if (status) filter.status = status;
+
+    const [total, events] = await Promise.all([
+      CongestionEvent.countDocuments(filter),
+      CongestionEvent.find(filter)
+        .sort({ detectedAt: -1, _id: -1 })
+        .skip(paging.skip)
+        .limit(paging.limit)
+        .populate("location", "name area latitude longitude")
+        .populate(
+          "measurement",
+          "vehicleCount averageSpeed trafficDensity measuredAt"
+        ),
+    ]);
 
     res.status(200).json({
       count: events.length,
+      pagination: buildPagination(paging, total),
       events,
     });
   } catch (error) {
+    if (sendQueryError(res, error)) return;
+
     res.status(500).json({
       message: "Failed to fetch congestion events",
       error: error.message,

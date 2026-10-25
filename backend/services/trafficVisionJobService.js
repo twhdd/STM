@@ -283,21 +283,27 @@ function createTrafficVisionJobService({
     } catch (error) {
       await fs.unlink(job.uploadPath).catch(() => {});
       const statusCode = error.statusCode || 400;
+      const completedAt = now();
+      const persistedError = {
+        code: "UPLOAD_INTERRUPTED",
+        message: "Video upload was interrupted before processing began.",
+      };
       await Job.updateOne(
         { _id: job._id, status: "QUEUED" },
         {
-          $set: {
-            status: "FAILED",
-            completedAt: now(),
-            error: {
-              code: "UPLOAD_INTERRUPTED",
-              message: "Video upload was interrupted before processing began.",
-            },
-          },
+          $set: { status: "FAILED", completedAt, error: persistedError },
           $unset: { queueSlot: 1, uploadLeaseUntil: 1 },
         }
       );
-      publishStatus(job, "FAILED");
+      publishStatus(
+        {
+          ...(typeof job.toObject === "function" ? job.toObject() : job),
+          status: "FAILED",
+          completedAt,
+          error: persistedError,
+        },
+        "FAILED"
+      );
       if (error instanceof TrafficVisionUploadError) throw error;
       throw new TrafficVisionUploadError(
         "The video upload was interrupted",

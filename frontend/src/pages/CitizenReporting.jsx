@@ -2,7 +2,11 @@ import { useEffect, useRef, useState } from "react";
 import { useAuth } from "../context/useAuth";
 import api from "../services/api";
 import { hasRole, roleAccess } from "../config/roleAccess";
+import { clampPage, readPagination, withPageQuery } from "../utils/pagination";
+import Pager from "../components/common/Pager";
 import "./CitizenReporting.css";
+
+const REPORT_PAGE_SIZE = 20;
 
 const reviewActionsByStatus = {
   SUBMITTED: [["UNDER_REVIEW", "Start review"]],
@@ -75,6 +79,10 @@ export function CitizenReporting() {
   );
   const [locations, setLocations] = useState([]);
   const [reports, setReports] = useState([]);
+  const [reportPage, setReportPage] = useState(1);
+  const [reportsPagination, setReportsPagination] = useState(() => readPagination(null, 0));
+  const [reportsBusy, setReportsBusy] = useState(false);
+  const lastRefreshIndex = useRef(null);
   const [locationId, setLocationId] = useState("");
   const [reportType, setReportType] = useState("");
   const [description, setDescription] = useState("");
@@ -94,13 +102,18 @@ export function CitizenReporting() {
     let cancelled = false;
 
     async function loadReportingData() {
-      setLoading(true);
+      // Changing the report page updates the list in place; only a refresh shows the spinner.
+      if (lastRefreshIndex.current !== refreshIndex) {
+        lastRefreshIndex.current = refreshIndex;
+        setLoading(true);
+      }
+      setReportsBusy(true);
       setLoadError("");
 
       try {
         const [locationsResponse, reportsResponse] = await Promise.all([
           api.get("/traffic-locations"),
-          api.get("/citizen-reports"),
+          api.get(withPageQuery("/citizen-reports", { page: reportPage, limit: REPORT_PAGE_SIZE })),
         ]);
 
         if (!Array.isArray(locationsResponse?.locations)) {
@@ -111,8 +124,17 @@ export function CitizenReporting() {
         }
 
         if (!cancelled) {
+          const pagination = readPagination(reportsResponse, reportsResponse.reports.length);
           setLocations(locationsResponse.locations);
           setReports(reportsResponse.reports);
+          setReportsPagination(pagination);
+          if (
+            reportsResponse.reports.length === 0 &&
+            pagination.total > 0 &&
+            reportPage > pagination.totalPages
+          ) {
+            setReportPage(clampPage(reportPage, pagination.totalPages));
+          }
           setLocationId((current) =>
             locationsResponse.locations.some((location) => location._id === current)
               ? current
@@ -124,7 +146,10 @@ export function CitizenReporting() {
           setLoadError(error.message || "Unable to load locations and citizen reports.");
         }
       } finally {
-        if (!cancelled) setLoading(false);
+        if (!cancelled) {
+          setLoading(false);
+          setReportsBusy(false);
+        }
       }
     }
 
@@ -132,7 +157,7 @@ export function CitizenReporting() {
     return () => {
       cancelled = true;
     };
-  }, [refreshIndex]);
+  }, [refreshIndex, reportPage]);
 
   function handleRefresh() {
     setLoading(true);
@@ -171,6 +196,7 @@ export function CitizenReporting() {
       setReportType("");
       setDescription("");
       setSeverity("MEDIUM");
+      setReportPage(1);
       handleRefresh();
     } catch (error) {
       setSubmitError(error.message || "Unable to submit your report.");
@@ -507,6 +533,12 @@ export function CitizenReporting() {
             ))}
           </div>
         )}
+        <Pager
+          pagination={reportsPagination}
+          onPageChange={setReportPage}
+          disabled={reportsBusy}
+          label="Citizen report pages"
+        />
       </section>
     </div>
   );

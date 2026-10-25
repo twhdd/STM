@@ -58,3 +58,35 @@ test("monitoring status reports available counts and active alert load", () => {
     ]
   );
 });
+
+test("an explicit active alert count wins over a partial alert page", () => {
+  const statuses = getMonitoringStatuses({
+    analytics: { totalMeasurements: 12 },
+    locations: [{ _id: "location-1" }],
+    alerts: [{ status: "RESOLVED" }, { status: "RESOLVED" }],
+    activeAlertCount: 11,
+    feedErrors: [],
+    realtimeStatus: "connected",
+  });
+
+  assert.deepEqual(
+    [statuses[2].value, statuses[2].state],
+    ["11 active", "warning"]
+  );
+});
+
+test("an explicit active alert count of zero reports none active", () => {
+  const statuses = getMonitoringStatuses({
+    analytics: { totalMeasurements: 12 },
+    locations: [],
+    alerts: [{ status: "ACTIVE" }],
+    activeAlertCount: 0,
+    feedErrors: [],
+    realtimeStatus: "connected",
+  });
+
+  assert.deepEqual(
+    [statuses[2].value, statuses[2].state],
+    ["None active", "available"]
+  );
+});

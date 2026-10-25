@@ -1,5 +1,33 @@
 const mongoose = require("mongoose");
 
+const priorityOverrideSchema = new mongoose.Schema(
+  {
+    vehicle: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "EmergencyVehicle",
+      required: true,
+    },
+
+    previousPhase: {
+      type: String,
+      enum: ["NORTH_SOUTH", "EAST_WEST", "ALL_RED"],
+      required: true,
+    },
+
+    previousGreenTime: {
+      type: Number,
+      required: true,
+      min: 5,
+    },
+
+    activatedAt: {
+      type: Date,
+      required: true,
+    },
+  },
+  { _id: false }
+);
+
 const trafficSignalSchema = new mongoose.Schema(
   {
     signalId: {
@@ -56,6 +84,11 @@ const trafficSignalSchema = new mongoose.Schema(
 
     lastOptimizedAt: {
       type: Date,
+    },
+
+    priorityOverride: {
+      type: priorityOverrideSchema,
+      default: undefined,
     },
   },
   { timestamps: true }

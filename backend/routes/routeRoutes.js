@@ -4,6 +4,7 @@ const {
   createRoute,
   getRoutes,
   getRouteById,
+  updateRouteWaypointList,
 } = require("../controllers/routeController");
 
 const {
@@ -22,5 +23,12 @@ router.post("/", authorizeRoles("ADMIN", "TRAFFIC_AUTHORITY"), createRoute);
 // Read routes (any authenticated user)
 router.get("/", getRoutes);
 router.get("/:id", getRouteById);
+
+// Replace a route's ordered waypoints (ADMIN, TRAFFIC_AUTHORITY)
+router.patch(
+  "/:id/waypoints",
+  authorizeRoles("ADMIN", "TRAFFIC_AUTHORITY"),
+  updateRouteWaypointList
+);
 
 module.exports = router;

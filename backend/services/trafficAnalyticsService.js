@@ -2,36 +2,40 @@ const TrafficMeasurement = require("../models/TrafficMeasurement");
 const CongestionEvent = require("../models/CongestionEvent");
 const TrafficAlert = require("../models/TrafficAlert");
 
-// Generate traffic analytics
+// Generate traffic analytics with database-side aggregation, so the cost does
+// not depend on loading every stored measurement into memory.
 const getTrafficAnalytics = async () => {
-  const measurements = await TrafficMeasurement.find();
+  const [totalsResult, densityCounts, totalCongestionEvents, activeAlerts] =
+    await Promise.all([
+      TrafficMeasurement.aggregate([
+        {
+          $group: {
+            _id: null,
+            total: { $sum: 1 },
+            totalVehicles: { $sum: "$vehicleCount" },
+            totalSpeed: { $sum: "$averageSpeed" },
+          },
+        },
+      ]),
+      TrafficMeasurement.aggregate([
+        { $group: { _id: "$trafficDensity", n: { $sum: 1 } } },
+      ]),
+      CongestionEvent.countDocuments(),
+      TrafficAlert.countDocuments({ status: "ACTIVE" }),
+    ]);
 
-  const congestionEvents = await CongestionEvent.find();
+  const totals = totalsResult[0];
 
-  const activeAlerts = await TrafficAlert.countDocuments({
-    status: "ACTIVE",
-  });
-
-  if (measurements.length === 0) {
+  if (!totals || totals.total === 0) {
     return {
       totalMeasurements: 0,
       averageVehicleCount: 0,
       averageSpeed: 0,
       trafficDistribution: {},
-      totalCongestionEvents: congestionEvents.length,
+      totalCongestionEvents,
       activeAlerts,
     };
   }
-
-  const totalVehicles = measurements.reduce(
-    (sum, measurement) => sum + measurement.vehicleCount,
-    0
-  );
-
-  const totalSpeed = measurements.reduce(
-    (sum, measurement) => sum + measurement.averageSpeed,
-    0
-  );
 
   const trafficDistribution = {
     LOW: 0,
@@ -40,20 +44,20 @@ const getTrafficAnalytics = async () => {
     SEVERE: 0,
   };
 
-  measurements.forEach((measurement) => {
-    trafficDistribution[measurement.trafficDensity]++;
+  densityCounts.forEach(({ _id, n }) => {
+    if (Object.hasOwn(trafficDistribution, _id)) {
+      trafficDistribution[_id] = n;
+    }
   });
 
   return {
-    totalMeasurements: measurements.length,
+    totalMeasurements: totals.total,
     averageVehicleCount: Number(
-      (totalVehicles / measurements.length).toFixed(2)
+      (totals.totalVehicles / totals.total).toFixed(2)
     ),
-    averageSpeed: Number(
-      (totalSpeed / measurements.length).toFixed(2)
-    ),
+    averageSpeed: Number((totals.totalSpeed / totals.total).toFixed(2)),
     trafficDistribution,
-    totalCongestionEvents: congestionEvents.length,
+    totalCongestionEvents,
     activeAlerts,
   };
 };

@@ -4,6 +4,8 @@ import { useAuth } from "../context/useAuth";
 import { hasRole, roleAccess } from "../config/roleAccess";
 import { REALTIME_EVENTS, subscribeToRealtimeEvents } from "../services/realtime";
 import { formatMeasurementSource } from "../utils/trafficMeasurementDisplay";
+import { clampPage, readPagination, withPageQuery } from "../utils/pagination";
+import Pager from "../components/common/Pager";
 import "../styles/trafficVision.css";
 import TrafficVisionView from "../components/trafficVision/TrafficVisionView";
 
@@ -25,6 +27,8 @@ function formatDateTime(dateStr) {
   }
 }
 
+const PAGE_SIZE = 25;
+
 export function TrafficMonitoring() {
   const { user, token } = useAuth();
   const canViewDevices = hasRole(
@@ -35,6 +39,14 @@ export function TrafficMonitoring() {
   const [devices, setDevices] = useState([]);
   const [measurements, setMeasurements] = useState([]);
   const [congestionEvents, setCongestionEvents] = useState([]);
+  const [measurementPage, setMeasurementPage] = useState(1);
+  const [eventPage, setEventPage] = useState(1);
+  const [measurementsPagination, setMeasurementsPagination] = useState(() =>
+    readPagination(null, 0)
+  );
+  const [eventsPagination, setEventsPagination] = useState(() => readPagination(null, 0));
+  const [activeEventCount, setActiveEventCount] = useState(0);
+  const [pageBusy, setPageBusy] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [feedErrors, setFeedErrors] = useState([]);
@@ -79,13 +91,17 @@ export function TrafficMonitoring() {
     let isCancelled = false;
 
     async function fetchMonitoringData() {
+      setPageBusy(true);
       try {
-        const [locationsRes, devicesRes, measurementsRes, eventsRes] =
+        const [locationsRes, devicesRes, measurementsRes, eventsRes, activeEventsRes] =
           await Promise.allSettled([
             api.get("/traffic-locations"),
             canViewDevices ? api.get("/monitoring-devices") : Promise.resolve(null),
-            api.get("/traffic-measurements"),
-            api.get("/congestion-events"),
+            api.get(
+              withPageQuery("/traffic-measurements", { page: measurementPage, limit: PAGE_SIZE })
+            ),
+            api.get(withPageQuery("/congestion-events", { page: eventPage, limit: PAGE_SIZE })),
+            api.get(withPageQuery("/congestion-events", { status: "ACTIVE", limit: 1 })),
           ]);
 
         if (!isCancelled) {
@@ -93,6 +109,7 @@ export function TrafficMonitoring() {
             ["Traffic locations", locationsRes, "locations"],
             ["Traffic measurements", measurementsRes, "measurements"],
             ["Congestion events", eventsRes, "events"],
+            ["Active congestion count", activeEventsRes, "events"],
           ].flatMap(([label, result, field]) => {
             if (result.status === "rejected") {
               return [`${label}: ${result.reason?.message || "Unable to load data."}`];
@@ -134,27 +151,46 @@ export function TrafficMonitoring() {
             measurementsRes.status === "fulfilled" &&
             Array.isArray(measurementsRes.value?.measurements)
           ) {
-            // Sort measurements by measuredAt descending (newest first)
-            const sorted = [...measurementsRes.value.measurements].sort(
-              (a, b) => new Date(b.measuredAt || 0) - new Date(a.measuredAt || 0)
-            );
-            setMeasurements(sorted);
+            // The server returns measurements newest first with a stable tie-breaker.
+            const rows = measurementsRes.value.measurements;
+            const pagination = readPagination(measurementsRes.value, rows.length);
+            setMeasurements(rows);
+            setMeasurementsPagination(pagination);
+            if (rows.length === 0 && pagination.total > 0 && measurementPage > pagination.totalPages) {
+              setMeasurementPage(clampPage(measurementPage, pagination.totalPages));
+            }
           } else {
             setMeasurements([]);
+            setMeasurementsPagination(readPagination(null, 0));
           }
 
           if (
             eventsRes.status === "fulfilled" &&
             Array.isArray(eventsRes.value?.events)
           ) {
-            setCongestionEvents(eventsRes.value.events);
+            const rows = eventsRes.value.events;
+            const pagination = readPagination(eventsRes.value, rows.length);
+            setCongestionEvents(rows);
+            setEventsPagination(pagination);
+            if (rows.length === 0 && pagination.total > 0 && eventPage > pagination.totalPages) {
+              setEventPage(clampPage(eventPage, pagination.totalPages));
+            }
           } else {
             setCongestionEvents([]);
+            setEventsPagination(readPagination(null, 0));
           }
+
+          setActiveEventCount(
+            activeEventsRes.status === "fulfilled" &&
+              Number.isInteger(activeEventsRes.value?.pagination?.total)
+              ? activeEventsRes.value.pagination.total
+              : 0
+          );
 
           setFeedErrors(feedErrors);
           setError(null);
           setLoading(false);
+          setPageBusy(false);
         }
       } catch (err) {
         if (!isCancelled) {
@@ -163,6 +199,7 @@ export function TrafficMonitoring() {
             err.message || "Failed to load real-time traffic monitoring data."
           );
           setLoading(false);
+          setPageBusy(false);
         }
       }
     }
@@ -172,7 +209,7 @@ export function TrafficMonitoring() {
     return () => {
       isCancelled = true;
     };
-  }, [canViewDevices, refreshIndex]);
+  }, [canViewDevices, refreshIndex, measurementPage, eventPage]);
 
   const handleRefresh = () => {
     setLoading(true);
@@ -189,9 +226,7 @@ export function TrafficMonitoring() {
     return found ? found.name : "Unknown Location";
   };
 
-  const activeCongestionCount = congestionEvents.filter(
-    (e) => e.status === "ACTIVE"
-  ).length;
+  const activeCongestionCount = activeEventCount;
 
   if (loading) {
     return (
@@ -292,7 +327,7 @@ export function TrafficMonitoring() {
           onClick={() => setActiveTab("telemetry")}
         >
           <span>📡 Sensor Telemetry</span>
-          <span className="cv-tab-badge">{measurements.length}</span>
+          <span className="cv-tab-badge">{measurementsPagination.total}</span>
         </button>
         <button
           type="button"
@@ -386,7 +421,7 @@ export function TrafficMonitoring() {
           </div>
           <div className="stat-content">
             <span className="stat-label">Traffic Measurements</span>
-            <span className="stat-value">{measurements.length}</span>
+            <span className="stat-value">{measurementsPagination.total}</span>
             <span className="stat-hint">Recorded measurement cycles</span>
           </div>
         </div>
@@ -539,7 +574,7 @@ export function TrafficMonitoring() {
         <div className="card-header">
           <h3 className="card-title">Latest Traffic Measurements</h3>
           <span className="card-subtitle">
-            {measurements.length} telemetry cycle(s) recorded (newest first)
+            {measurementsPagination.total} telemetry cycle(s) recorded (newest first)
           </span>
         </div>
         <div className="card-body">
@@ -605,6 +640,12 @@ export function TrafficMonitoring() {
               </table>
             </div>
           )}
+          <Pager
+            pagination={measurementsPagination}
+            onPageChange={setMeasurementPage}
+            disabled={pageBusy}
+            label="Traffic measurement pages"
+          />
         </div>
       </div>
 
@@ -613,7 +654,7 @@ export function TrafficMonitoring() {
         <div className="card-header">
           <h3 className="card-title">Congestion Events</h3>
           <span className="card-subtitle">
-            {congestionEvents.length} automated incident detection(s)
+            {eventsPagination.total} automated incident detection(s)
           </span>
         </div>
         <div className="card-body">
@@ -681,6 +722,12 @@ export function TrafficMonitoring() {
               </table>
             </div>
           )}
+          <Pager
+            pagination={eventsPagination}
+            onPageChange={setEventPage}
+            disabled={pageBusy}
+            label="Congestion event pages"
+          />
         </div>
       </div>
         </>

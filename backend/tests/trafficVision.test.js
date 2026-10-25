@@ -400,6 +400,537 @@ describe("Computer Vision Worker & Tracking Toggle", () => {
     assert.ok(updatedJob.$set.retentionCleanedAt);
     assert.equal(updatedJob.$unset.resultPath, 1);
   });
+
+  test("COMPLETED realtime event carries the persisted metrics and timings", async () => {
+    const { safeJobPayload } = require("../services/trafficVisionRealtimeService");
+    const modelPath = path.join(tempDir, "best.pt");
+    await fs.writeFile(modelPath, "dummy-weights");
+    const uploadsDir = path.join(tempDir, "uploads");
+    const outputsDir = path.join(tempDir, "outputs");
+    await fs.mkdir(uploadsDir, { recursive: true });
+    await fs.mkdir(outputsDir, { recursive: true });
+
+    const analysis = {
+      schemaVersion: 1,
+      video: { fileName: "x.mp4", width: 640, height: 480, reportedFps: 30, reportedFrameCount: 1 },
+      configuration: { trackingEnabled: false },
+      frames: [
+        {
+          frameIndex: 0,
+          timestampMs: 0,
+          detections: [
+            { class: "car", confidence: 0.9, bbox: [0, 0, 10, 10], trackId: null },
+            { class: "bus", confidence: 0.8, bbox: [5, 5, 20, 20], trackId: null },
+          ],
+        },
+      ],
+      metrics: {
+        detection: {
+          totalDetectionEvents: 2,
+          perClassDetectionEvents: { bus: 1, car: 1 },
+          averageDetectionsPerProcessedFrame: 2,
+          framesProcessed: 1,
+          processingTimeSeconds: 0.1,
+          processingFps: 10,
+        },
+        tracking: null,
+        flow: null,
+      },
+    };
+    const execFile = (file, args, options, callback) => {
+      const resultPath = path.join(path.dirname(args[args.indexOf("--output") + 1]), "result.json");
+      fs.writeFile(resultPath, JSON.stringify(analysis)).then(() => callback(null));
+      return { kill() {} };
+    };
+
+    const uploadPath = path.join(uploadsDir, "in.mp4");
+    await fs.writeFile(uploadPath, "dummy-video");
+    const claimedAtClaimTime = {
+      _id: new mongoose.Types.ObjectId(),
+      owner: USER_ID,
+      status: "PROCESSING",
+      tracking: false,
+      annotatedRequested: false,
+      uploadPath,
+      originalFilename: "in.mp4",
+      leaseToken: "claim-token-123",
+    };
+    let claims = 0;
+    const updates = [];
+    const published = [];
+    const mockJobModel = {
+      findOneAndUpdate: () => ({
+        select: async () => (claims++ === 0 ? claimedAtClaimTime : null),
+      }),
+      updateOne: async (_filter, update) => {
+        updates.push(update);
+        return { matchedCount: 1, modifiedCount: 1 };
+      },
+      find: () => ({ select: async () => [] }),
+      createIndexes: async () => {},
+    };
+
+    const worker = createTrafficVisionWorker({
+      Job: mockJobModel,
+      config: {
+        dataDirectory: tempDir,
+        uploadsDirectory: uploadsDir,
+        outputsDirectory: outputsDir,
+        pythonExecutable: "python",
+        modelPath,
+        timeoutMs: 5000,
+        leaseMs: 60000,
+        concurrency: 1,
+        queueCapacity: 5,
+        totalCapacity: 6,
+        maxUploadBytes: 1000000,
+        retentionDays: 7,
+        pollIntervalMs: 60000,
+        pythonWorkingDirectory: tempDir,
+        pythonModule: "traffic_vision.cli",
+        defaultDevice: "cpu",
+        confidence: 0.25,
+      },
+      execFile,
+      realtime: { publishStatus: (job, status) => published.push({ job, status }) },
+    });
+
+    await worker.start();
+    for (let i = 0; i < 60 && !published.some((p) => p.status === "COMPLETED"); i += 1) {
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    await worker.stop();
+
+    const completedEvent = published.find((p) => p.status === "COMPLETED");
+    assert.ok(completedEvent, "worker must publish a COMPLETED event");
+    const persisted = updates.find((u) => u.$set?.status === "COMPLETED").$set;
+    const payload = safeJobPayload(completedEvent.job, "COMPLETED");
+
+    assert.equal(payload.metrics?.detection?.totalDetectionEvents, 2);
+    assert.deepEqual(payload.metrics, persisted.metrics);
+    assert.deepEqual(payload.completedAt, persisted.completedAt.toISOString());
+    assert.equal(payload.processingDurationMs, persisted.processingDurationMs);
+  });
+});
+
+describe("Computer Vision Worker Attempt Limit", () => {
+  const { MAX_ATTEMPTS } = require("../services/trafficVisionWorker");
+  const { safeJobPayload } = require("../services/trafficVisionRealtimeService");
+  let tempDir;
+  let modelPath;
+
+  beforeEach(async () => {
+    tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "stm-cv-attempts-"));
+    modelPath = path.join(tempDir, "best.pt");
+    await fs.writeFile(modelPath, "dummy-weights");
+  });
+
+  afterEach(async () => {
+    await fs.rm(tempDir, { recursive: true, force: true }).catch(() => {});
+  });
+
+  function harness({ stale = [], claimed = null, execFile } = {}) {
+    const updates = [];
+    const published = [];
+    let claimsLeft = claimed ? 1 : 0;
+    const Job = {
+      find: (query = {}) => ({
+        select: async () => (query.status === "PROCESSING" ? stale : []),
+      }),
+      findOneAndUpdate: () => ({
+        select: async () => (claimsLeft-- > 0 ? claimed : null),
+      }),
+      updateOne: async (filter, update) => {
+        updates.push({ filter, update });
+        return { matchedCount: 1, modifiedCount: 1 };
+      },
+      createIndexes: async () => {},
+    };
+    const worker = createTrafficVisionWorker({
+      Job,
+      config: {
+        dataDirectory: tempDir,
+        uploadsDirectory: path.join(tempDir, "uploads"),
+        outputsDirectory: path.join(tempDir, "outputs"),
+        pythonExecutable: "python",
+        modelPath,
+        timeoutMs: 5000,
+        leaseMs: 60000,
+        concurrency: 1,
+        queueCapacity: 5,
+        totalCapacity: 6,
+        maxUploadBytes: 1000000,
+        retentionDays: 7,
+        pollIntervalMs: 60000,
+        pythonWorkingDirectory: tempDir,
+        pythonModule: "traffic_vision.cli",
+        defaultDevice: "cpu",
+        confidence: 0.25,
+      },
+      execFile,
+      realtime: { publishStatus: (job, status) => published.push({ job, status }) },
+    });
+    return { worker, updates, published };
+  }
+
+  const staleJob = (attempts) => ({
+    _id: new mongoose.Types.ObjectId(),
+    owner: USER_ID,
+    status: "PROCESSING",
+    attempts,
+    originalFilename: "in.mp4",
+    leaseToken: "stale-token",
+  });
+
+  async function interruptClaimedJobByShutdown(attempts) {
+    let execStarted;
+    const started = new Promise((resolve) => {
+      execStarted = resolve;
+    });
+    const execFile = (_file, _args, _options, done) => {
+      execStarted();
+      return {
+        kill() {
+          done(Object.assign(new Error("terminated"), { killed: true }));
+        },
+      };
+    };
+    const claimed = {
+      _id: new mongoose.Types.ObjectId(),
+      owner: USER_ID,
+      status: "PROCESSING",
+      tracking: false,
+      annotatedRequested: false,
+      attempts,
+      originalFilename: "in.mp4",
+      leaseToken: "claim-token",
+    };
+    const result = harness({ claimed, execFile });
+    await result.worker.start();
+    await started;
+    await result.worker.stop();
+    return result;
+  }
+
+  test("an expired lease below the attempt limit re-queues the job and keeps its queue slot", async () => {
+    const { worker, updates, published } = harness({
+      stale: [staleJob(MAX_ATTEMPTS - 1)],
+    });
+    await worker.start();
+    await worker.stop();
+
+    assert.equal(updates.length, 1);
+    assert.equal(updates[0].filter.leaseToken, "stale-token");
+    assert.equal(updates[0].update.$set.status, "QUEUED");
+    assert.equal(updates[0].update.$unset.queueSlot, undefined);
+    assert.deepEqual(published.map((p) => p.status), ["QUEUED"]);
+  });
+
+  test("an expired lease at or beyond the attempt limit fails the job terminally", async () => {
+    for (const attempts of [MAX_ATTEMPTS, MAX_ATTEMPTS + 3]) {
+      const { worker, updates, published } = harness({ stale: [staleJob(attempts)] });
+      await worker.start();
+      await worker.stop();
+
+      assert.equal(updates.length, 1, `attempts=${attempts}`);
+      const { $set, $unset } = updates[0].update;
+      assert.equal($set.status, "FAILED");
+      assert.ok($set.completedAt instanceof Date, "completedAt is required for retention cleanup");
+      assert.equal($set.error.code, "PROCESS_FAILED");
+      assert.deepEqual($unset, { queueSlot: 1, leaseToken: 1, leaseUntil: 1 });
+      await new CVProcessingJob({
+        owner: USER_ID,
+        uploadPath: "unused",
+        originalFilename: "in.mp4",
+        status: "FAILED",
+        error: $set.error,
+      }).validate();
+
+      assert.deepEqual(published.map((p) => p.status), ["FAILED"]);
+      const payload = safeJobPayload(published[0].job, "FAILED");
+      assert.deepEqual(payload.error, $set.error);
+      assert.equal(payload.completedAt, $set.completedAt.toISOString());
+    }
+  });
+
+  test("a shutdown interruption below the attempt limit re-queues the job", async () => {
+    const { updates, published } = await interruptClaimedJobByShutdown(MAX_ATTEMPTS - 1);
+
+    const transitions = updates.filter((u) => u.update.$set?.status);
+    assert.equal(transitions.length, 1);
+    assert.equal(transitions[0].filter.leaseToken, "claim-token");
+    assert.equal(transitions[0].update.$set.status, "QUEUED");
+    assert.deepEqual(published.map((p) => p.status), ["PROCESSING", "QUEUED"]);
+  });
+
+  test("a shutdown interruption of the final attempt fails the job instead of re-queueing it", async () => {
+    const { updates, published } = await interruptClaimedJobByShutdown(MAX_ATTEMPTS);
+
+    const transitions = updates.filter((u) => u.update.$set?.status);
+    assert.equal(transitions.length, 1);
+    assert.equal(transitions[0].update.$set.status, "FAILED");
+    assert.equal(transitions[0].update.$unset.queueSlot, 1);
+    assert.deepEqual(published.map((p) => p.status), ["PROCESSING", "FAILED"]);
+  });
+
+  for (const [label, attempts] of [
+    ["undefined", undefined],
+    ["null", null],
+    ["NaN", NaN],
+    ["negative", -1],
+    ["non-integer", 2.5],
+    ["-Infinity", -Infinity],
+  ]) {
+    test(`an expired lease with an unreadable attempts count (${label}) fails terminally`, async () => {
+      const { worker, updates, published } = harness({ stale: [staleJob(attempts)] });
+      await worker.start();
+      await worker.stop();
+
+      assert.equal(updates.length, 1);
+      assert.equal(updates[0].update.$set.status, "FAILED");
+      assert.deepEqual(updates[0].update.$unset, { queueSlot: 1, leaseToken: 1, leaseUntil: 1 });
+      assert.deepEqual(published.map((p) => p.status), ["FAILED"]);
+    });
+  }
+
+  for (const attempts of [0, 1, MAX_ATTEMPTS - 1]) {
+    test(`an expired lease with a valid attempts count of ${attempts} still re-queues`, async () => {
+      const { worker, updates, published } = harness({ stale: [staleJob(attempts)] });
+      await worker.start();
+      await worker.stop();
+
+      assert.equal(updates.length, 1);
+      assert.equal(updates[0].update.$set.status, "QUEUED");
+      assert.equal(updates[0].update.$unset.queueSlot, undefined);
+      assert.deepEqual(published.map((p) => p.status), ["QUEUED"]);
+    });
+  }
+
+  test("a shutdown interruption with an unreadable attempts count fails the job instead of re-queueing it", async () => {
+    const { updates, published } = await interruptClaimedJobByShutdown(null);
+
+    const transitions = updates.filter((u) => u.update.$set?.status);
+    assert.equal(transitions.length, 1);
+    assert.equal(transitions[0].update.$set.status, "FAILED");
+    assert.equal(transitions[0].update.$unset.queueSlot, 1);
+    assert.deepEqual(published.map((p) => p.status), ["PROCESSING", "FAILED"]);
+  });
+
+  test("jobs hydrated by the real model: an absent count re-queues, unreadable counts fail", async () => {
+    const stored = (extra) => ({
+      _id: new mongoose.Types.ObjectId(),
+      owner: USER_ID,
+      uploadPath: "unused",
+      originalFilename: "in.mp4",
+      status: "PROCESSING",
+      leaseToken: "stale-token",
+      ...extra,
+    });
+    for (const [label, extra, expected] of [
+      ["absent", {}, "QUEUED"],
+      ["3", { attempts: 3 }, "QUEUED"],
+      ["NaN", { attempts: NaN }, "FAILED"],
+      ["null", { attempts: null }, "FAILED"],
+      ["-4", { attempts: -4 }, "FAILED"],
+    ]) {
+      const { worker, updates } = harness({ stale: [CVProcessingJob.hydrate(stored(extra))] });
+      await worker.start();
+      await worker.stop();
+
+      assert.equal(updates.length, 1, `attempts ${label}`);
+      assert.equal(updates[0].update.$set.status, expected, `attempts ${label}`);
+    }
+  });
+});
+
+describe("Computer Vision FAILED Event Payloads", () => {
+  const { Readable } = require("node:stream");
+  const { safeJobPayload, trafficVisionRealtimeService } = require("../services/trafficVisionRealtimeService");
+  let tempDir;
+  let modelPath;
+
+  beforeEach(async () => {
+    tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "stm-cv-failed-"));
+    modelPath = path.join(tempDir, "best.pt");
+    await fs.writeFile(modelPath, "dummy-weights");
+  });
+
+  afterEach(async () => {
+    await fs.rm(tempDir, { recursive: true, force: true }).catch(() => {});
+  });
+
+  function workerFor({ incomplete = [], claimed = null, execFile }) {
+    const updates = [];
+    const published = [];
+    let claimsLeft = claimed ? 1 : 0;
+    const Job = {
+      find: (query = {}) => ({
+        select: async () => (query.status === "QUEUED" ? incomplete : []),
+      }),
+      findOneAndUpdate: () => ({
+        select: async () => (claimsLeft-- > 0 ? claimed : null),
+      }),
+      updateOne: async (filter, update) => {
+        updates.push({ filter, update });
+        return { matchedCount: 1, modifiedCount: 1 };
+      },
+      createIndexes: async () => {},
+    };
+    const worker = createTrafficVisionWorker({
+      Job,
+      config: {
+        dataDirectory: tempDir,
+        uploadsDirectory: path.join(tempDir, "uploads"),
+        outputsDirectory: path.join(tempDir, "outputs"),
+        pythonExecutable: "python",
+        modelPath,
+        timeoutMs: 5000,
+        leaseMs: 60000,
+        concurrency: 1,
+        queueCapacity: 5,
+        totalCapacity: 6,
+        maxUploadBytes: 1000000,
+        retentionDays: 7,
+        pollIntervalMs: 60000,
+        pythonWorkingDirectory: tempDir,
+        pythonModule: "traffic_vision.cli",
+        defaultDevice: "cpu",
+        confidence: 0.25,
+      },
+      execFile,
+      realtime: { publishStatus: (job, status) => published.push({ job, status }) },
+    });
+    const persistedFailure = () =>
+      updates.find((u) => u.update.$set?.status === "FAILED").update.$set;
+    return { worker, updates, published, persistedFailure };
+  }
+
+  for (const [label, execError, expectedCode] of [
+    ["generic processor failure", new Error("exit 1"), "PROCESS_FAILED"],
+    ["processor timeout", Object.assign(new Error("timed out"), { code: "ETIMEDOUT" }), "PROCESS_TIMEOUT"],
+  ]) {
+    test(`FAILED event after a ${label} carries the persisted error and timings`, async () => {
+      const claimed = {
+        _id: new mongoose.Types.ObjectId(),
+        owner: USER_ID,
+        status: "PROCESSING",
+        tracking: false,
+        annotatedRequested: false,
+        attempts: 1,
+        originalFilename: "in.mp4",
+        leaseToken: "claim-token",
+      };
+      const execFile = (_file, _args, _options, done) => {
+        setImmediate(() => done(execError));
+        return { kill() {} };
+      };
+      const { worker, published, persistedFailure } = workerFor({ claimed, execFile });
+
+      await worker.start();
+      for (let i = 0; i < 60 && !published.some((p) => p.status === "FAILED"); i += 1) {
+        await new Promise((r) => setTimeout(r, 50));
+      }
+      await worker.stop();
+
+      const failed = published.find((p) => p.status === "FAILED");
+      assert.ok(failed, "worker must publish a FAILED event");
+      const persisted = persistedFailure();
+      const payload = safeJobPayload(failed.job, failed.status);
+      assert.equal(persisted.error.code, expectedCode);
+      assert.deepEqual(payload.error, persisted.error);
+      assert.equal(payload.completedAt, persisted.completedAt.toISOString());
+      assert.equal(payload.processingDurationMs, persisted.processingDurationMs);
+      assert.equal(typeof payload.processingDurationMs, "number");
+    });
+  }
+
+  test("FAILED event for an abandoned incomplete upload carries the persisted error and completedAt", async () => {
+    const incomplete = {
+      _id: new mongoose.Types.ObjectId(),
+      owner: USER_ID,
+      status: "QUEUED",
+      uploadReady: false,
+      originalFilename: "partial.mp4",
+      uploadPath: path.join(tempDir, "uploads", "partial.mp4"),
+    };
+    const { worker, published, persistedFailure } = workerFor({ incomplete: [incomplete] });
+
+    await worker.start();
+    await worker.stop();
+
+    assert.deepEqual(published.map((p) => p.status), ["FAILED"]);
+    const persisted = persistedFailure();
+    const payload = safeJobPayload(published[0].job, published[0].status);
+    assert.equal(persisted.error.code, "UPLOAD_INTERRUPTED");
+    assert.deepEqual(payload.error, persisted.error);
+    assert.equal(payload.completedAt, persisted.completedAt.toISOString());
+  });
+
+  test("FAILED event for a rejected upload in submit() carries the persisted error and completedAt", async () => {
+    const uploadsDirectory = path.join(tempDir, "uploads");
+    const updates = [];
+    const Job = {
+      create: async (doc) => ({ _id: new mongoose.Types.ObjectId(), ...doc }),
+      updateOne: async (filter, update) => {
+        updates.push({ filter, update });
+        return { matchedCount: 1, modifiedCount: 1 };
+      },
+    };
+    const service = createTrafficVisionJobService({
+      Job,
+      worker: {
+        getConfig: () => ({
+          uploadsDirectory,
+          outputsDirectory: path.join(tempDir, "outputs"),
+          modelPath,
+          timeoutMs: 5000,
+          totalCapacity: 1,
+          maxUploadBytes: 1000000,
+        }),
+        notifyQueueChanged: async () => {},
+      },
+      logger: { error() {} },
+    });
+    const request = Object.assign(
+      new Readable({
+        read() {
+          this.push(Buffer.from("this is not a video container"));
+          this.push(null);
+        },
+      }),
+      {
+        headers: { "x-file-name": "clip.mp4", "content-type": "video/mp4" },
+        query: {},
+        get: () => undefined,
+      }
+    );
+
+    const emitted = [];
+    const fakeIo = {
+      on() {},
+      off() {},
+      to() {
+        return this;
+      },
+      emit: (event, payload) => emitted.push({ event, payload }),
+    };
+    trafficVisionRealtimeService.attach(fakeIo);
+    try {
+      await assert.rejects(
+        service.submit(request, { userId: USER_ID, role: "CITIZEN" }),
+        { code: "INVALID_VIDEO_SIGNATURE" }
+      );
+    } finally {
+      trafficVisionRealtimeService.detach(fakeIo);
+    }
+
+    const persisted = updates.find((u) => u.update.$set?.status === "FAILED").update.$set;
+    assert.equal(emitted.length, 1);
+    assert.equal(emitted[0].payload.status, "FAILED");
+    assert.equal(persisted.error.code, "UPLOAD_INTERRUPTED");
+    assert.deepEqual(emitted[0].payload.error, persisted.error);
+    assert.equal(emitted[0].payload.completedAt, persisted.completedAt.toISOString());
+  });
 });
 
 describe("Computer Vision Authorization & Ownership Enforcement", () => {

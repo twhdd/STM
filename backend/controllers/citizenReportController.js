@@ -1,6 +1,11 @@
 
 const CitizenReport = require("../models/CitizenReport");
 const mongoose = require("mongoose");
+const {
+  buildPagination,
+  parsePagination,
+  sendQueryError,
+} = require("../utils/pagination");
 
 // Roles that may view every report and review report statuses.
 const REVIEWER_ROLES = [
@@ -158,10 +163,13 @@ const getCitizenReports = async (req, res) => {
       ? {}
       : { reportedBy: req.user.userId };
 
-    let query = CitizenReport.find(filter).populate(
-      "location",
-      "name area latitude longitude"
-    );
+    const paging = parsePagination(req.query);
+
+    let query = CitizenReport.find(filter)
+      .sort({ createdAt: -1, _id: -1 })
+      .skip(paging.skip)
+      .limit(paging.limit)
+      .populate("location", "name area latitude longitude");
 
     if (reviewer) {
       query = query
@@ -173,15 +181,21 @@ const getCitizenReports = async (req, res) => {
       );
     }
 
-    const reports = await query;
+    const [total, reports] = await Promise.all([
+      CitizenReport.countDocuments(filter),
+      query,
+    ]);
 
     return res.status(200).json({
       count: reports.length,
+      pagination: buildPagination(paging, total),
       reports: reports.map((report) =>
         reportForResponse(report, reviewer)
       ),
     });
   } catch (error) {
+    if (sendQueryError(res, error)) return;
+
     return res.status(500).json({
       message: "Failed to fetch citizen reports",
       error: error.message,

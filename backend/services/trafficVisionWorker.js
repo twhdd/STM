@@ -11,6 +11,9 @@ const {
 
 const MAX_CAPTURED_OUTPUT_BYTES = 512 * 1024;
 const MAX_RESULT_BYTES = 256 * 1024 * 1024;
+const MAX_ATTEMPTS = 8;
+const RETRY_LIMIT_MESSAGE =
+  "Video processing stopped after reaching the maximum number of attempts.";
 const PROCESSING_ERROR_MESSAGES = Object.freeze({
   PROCESS_FAILED: "Video processing failed.",
   PROCESS_TIMEOUT: "Video processing exceeded the configured time limit.",
@@ -75,6 +78,10 @@ function createTrafficVisionWorker({
     }).select("+uploadPath +queueSlot");
 
     for (const job of jobs) {
+      const error = {
+        code: "UPLOAD_INTERRUPTED",
+        message: PROCESSING_ERROR_MESSAGES.UPLOAD_INTERRUPTED,
+      };
       const result = await Job.updateOne(
         {
           _id: job._id,
@@ -83,22 +90,61 @@ function createTrafficVisionWorker({
           uploadLeaseUntil: { $lte: expiredAt },
         },
         {
-          $set: {
-            status: "FAILED",
-            completedAt: expiredAt,
-            error: {
-              code: "UPLOAD_INTERRUPTED",
-              message: PROCESSING_ERROR_MESSAGES.UPLOAD_INTERRUPTED,
-            },
-          },
+          $set: { status: "FAILED", completedAt: expiredAt, error },
           $unset: { queueSlot: 1, uploadLeaseUntil: 1 },
         }
       );
       if (result.modifiedCount) {
         await fs.unlink(job.uploadPath).catch(() => {});
-        publish(job, "FAILED");
+        publish(
+          {
+            ...(typeof job.toObject === "function" ? job.toObject() : job),
+            status: "FAILED",
+            completedAt: expiredAt,
+            error,
+          },
+          "FAILED"
+        );
       }
     }
+  }
+
+  async function requeueOrExhaust(job, filter) {
+    // A count that is not a non-negative integer (NaN, null, negative, fractional) never reaches the limit via $inc, so it fails closed.
+    const exhausted = !(
+      Number.isInteger(job.attempts) &&
+      job.attempts >= 0 &&
+      job.attempts < MAX_ATTEMPTS
+    );
+    const completedAt = now();
+    const error = { code: "PROCESS_FAILED", message: RETRY_LIMIT_MESSAGE };
+    const result = await Job.updateOne(
+      filter,
+      exhausted
+        ? {
+            $set: { status: "FAILED", completedAt, error },
+            $unset: { queueSlot: 1, leaseToken: 1, leaseUntil: 1 },
+          }
+        : {
+            $set: { status: "QUEUED" },
+            $unset: { leaseToken: 1, leaseUntil: 1 },
+          }
+    );
+    if (!result.modifiedCount) return false;
+    if (exhausted) {
+      publish(
+        {
+          ...(typeof job.toObject === "function" ? job.toObject() : job),
+          status: "FAILED",
+          completedAt,
+          error,
+        },
+        "FAILED"
+      );
+    } else {
+      publish(job, "QUEUED");
+    }
+    return true;
   }
 
   async function recoverStaleProcessingJobs() {
@@ -111,22 +157,13 @@ function createTrafficVisionWorker({
     for (const job of staleJobs) {
       if (activeJobs.has(String(job._id))) continue;
       const token = job.leaseToken;
-      const result = await Job.updateOne(
-        {
-          _id: job._id,
-          status: "PROCESSING",
-          leaseToken: token,
-          leaseUntil: { $lte: expiredAt },
-        },
-        {
-          $set: { status: "QUEUED" },
-          $unset: { leaseToken: 1, leaseUntil: 1 },
-        }
-      );
-      if (result.modifiedCount) {
-        await cleanupAttempt(job._id, token);
-        publish(job, "QUEUED");
-      }
+      const applied = await requeueOrExhaust(job, {
+        _id: job._id,
+        status: "PROCESSING",
+        leaseToken: token,
+        leaseUntil: { $lte: expiredAt },
+      });
+      if (applied) await cleanupAttempt(job._id, token);
     }
   }
 
@@ -268,31 +305,28 @@ function createTrafficVisionWorker({
   }
 
   async function requeueOnShutdown(job, token) {
-    const result = await Job.updateOne(
-      { _id: job._id, status: "PROCESSING", leaseToken: token },
-      {
-        $set: { status: "QUEUED" },
-        $unset: { leaseToken: 1, leaseUntil: 1 },
-      }
-    );
-    if (result.modifiedCount) publish(job, "QUEUED");
+    await requeueOrExhaust(job, {
+      _id: job._id,
+      status: "PROCESSING",
+      leaseToken: token,
+    });
   }
 
   async function failJob(job, token, error, startedAt) {
     const code = Object.hasOwn(PROCESSING_ERROR_MESSAGES, error?.code)
       ? error.code
       : "PROCESS_FAILED";
+    const completedAt = now();
+    const processingDurationMs = Math.max(0, completedAt.getTime() - startedAt);
+    const persistedError = { code, message: PROCESSING_ERROR_MESSAGES[code] };
     const result = await Job.updateOne(
       { _id: job._id, status: "PROCESSING", leaseToken: token },
       {
         $set: {
           status: "FAILED",
-          completedAt: now(),
-          processingDurationMs: Math.max(0, now().getTime() - startedAt),
-          error: {
-            code,
-            message: PROCESSING_ERROR_MESSAGES[code],
-          },
+          completedAt,
+          processingDurationMs,
+          error: persistedError,
         },
         $unset: {
           queueSlot: 1,
@@ -301,7 +335,18 @@ function createTrafficVisionWorker({
         },
       }
     );
-    if (result.modifiedCount) publish(job, "FAILED");
+    if (result.modifiedCount) {
+      publish(
+        {
+          ...(typeof job.toObject === "function" ? job.toObject() : job),
+          status: "FAILED",
+          completedAt,
+          processingDurationMs,
+          error: persistedError,
+        },
+        "FAILED"
+      );
+    }
   }
 
   async function processClaimedJob(job, token) {
@@ -362,13 +407,15 @@ function createTrafficVisionWorker({
         }
       }
 
+      const completedAt = now();
+      const processingDurationMs = Math.max(0, completedAt.getTime() - startedAt);
       const result = await Job.updateOne(
         { _id: job._id, status: "PROCESSING", leaseToken: token },
         {
           $set: {
             status: "COMPLETED",
-            completedAt: now(),
-            processingDurationMs: Math.max(0, now().getTime() - startedAt),
+            completedAt,
+            processingDurationMs,
             metrics,
             resultPath,
             ...(job.annotatedRequested ? { annotatedPath: annotationPath } : {}),
@@ -382,7 +429,17 @@ function createTrafficVisionWorker({
         }
       );
       if (result.modifiedCount) {
-        publish(job, "COMPLETED");
+        publish(
+          {
+            ...(typeof job.toObject === "function" ? job.toObject() : job),
+            status: "COMPLETED",
+            completedAt,
+            processingDurationMs,
+            metrics,
+            measurementIds: [],
+          },
+          "COMPLETED"
+        );
       } else {
         await cleanupAttempt(job._id, token);
       }
@@ -483,6 +540,7 @@ function createTrafficVisionWorker({
 const trafficVisionWorker = createTrafficVisionWorker();
 
 module.exports = {
+  MAX_ATTEMPTS,
   MAX_CAPTURED_OUTPUT_BYTES,
   PROCESSING_ERROR_MESSAGES,
   createTrafficVisionWorker,

@@ -3,9 +3,14 @@ import api from "../services/api";
 import { useAuth } from "../context/useAuth";
 import { hasRole, roleAccess } from "../config/roleAccess";
 import { REALTIME_EVENTS, subscribeToRealtimeEvents } from "../services/realtime";
+import { clampPage, readPagination, withPageQuery } from "../utils/pagination";
+import Pager from "../components/common/Pager";
 import "./AlertsAnalytics.css";
 
 const trafficLevels = ["LOW", "MEDIUM", "HIGH", "SEVERE"];
+const ALERT_PAGE_SIZE = 25;
+// The events list feeds the "generate alert" picker; 100 is the API maximum page size.
+const EVENT_PICKER_SIZE = 100;
 
 function formatDateTime(value) {
   if (!value) return "—";
@@ -57,6 +62,10 @@ export function AlertsAnalytics() {
   const [analytics, setAnalytics] = useState(null);
   const [alerts, setAlerts] = useState([]);
   const [events, setEvents] = useState([]);
+  const [alertPage, setAlertPage] = useState(1);
+  const [alertsPagination, setAlertsPagination] = useState(() => readPagination(null, 0));
+  const [alertsBusy, setAlertsBusy] = useState(false);
+  const lastRefreshIndex = useRef(null);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState("");
   const [refreshIndex, setRefreshIndex] = useState(0);
@@ -110,14 +119,19 @@ export function AlertsAnalytics() {
     let cancelled = false;
 
     async function loadDashboardData() {
-      setLoading(true);
+      // Changing the alert page updates the table in place; only a refresh shows the spinner.
+      if (lastRefreshIndex.current !== refreshIndex) {
+        lastRefreshIndex.current = refreshIndex;
+        setLoading(true);
+      }
+      setAlertsBusy(true);
       setLoadError("");
 
       try {
         const [alertsResponse, analyticsResponse, eventsResponse] = await Promise.all([
-          api.get("/traffic-alerts"),
+          api.get(withPageQuery("/traffic-alerts", { page: alertPage, limit: ALERT_PAGE_SIZE })),
           api.get("/traffic-analytics"),
-          api.get("/congestion-events"),
+          api.get(withPageQuery("/congestion-events", { limit: EVENT_PICKER_SIZE })),
         ]);
 
         if (!Array.isArray(alertsResponse?.alerts)) {
@@ -131,7 +145,16 @@ export function AlertsAnalytics() {
         }
 
         if (!cancelled) {
+          const pagination = readPagination(alertsResponse, alertsResponse.alerts.length);
           setAlerts(alertsResponse.alerts);
+          setAlertsPagination(pagination);
+          if (
+            alertsResponse.alerts.length === 0 &&
+            pagination.total > 0 &&
+            alertPage > pagination.totalPages
+          ) {
+            setAlertPage(clampPage(alertPage, pagination.totalPages));
+          }
           setAnalytics(analyticsResponse.analytics);
           setEvents(eventsResponse.events);
           setSelectedEventId((current) =>
@@ -143,7 +166,10 @@ export function AlertsAnalytics() {
           setLoadError(error.message || "Unable to load alerts and traffic analytics.");
         }
       } finally {
-        if (!cancelled) setLoading(false);
+        if (!cancelled) {
+          setLoading(false);
+          setAlertsBusy(false);
+        }
       }
     }
 
@@ -151,7 +177,7 @@ export function AlertsAnalytics() {
     return () => {
       cancelled = true;
     };
-  }, [refreshIndex]);
+  }, [refreshIndex, alertPage]);
 
   function handleRefresh() {
     setRefreshIndex((current) => current + 1);
@@ -373,7 +399,7 @@ export function AlertsAnalytics() {
       <section className="card alerts-list-card">
         <div className="card-header">
           <h3 className="card-title">Traffic Alerts</h3>
-          <p className="card-subtitle">{alerts.length} alert(s)</p>
+          <p className="card-subtitle">{alertsPagination.total} alert(s) (newest first)</p>
         </div>
         {alerts.length === 0 ? (
           <p className="empty-state-text">No traffic alerts found.</p>
@@ -433,6 +459,12 @@ export function AlertsAnalytics() {
             </table>
           </div>
         )}
+        <Pager
+          pagination={alertsPagination}
+          onPageChange={setAlertPage}
+          disabled={alertsBusy}
+          label="Traffic alert pages"
+        />
       </section>
 
       <section className="card generate-alert-card">

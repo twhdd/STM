@@ -27,6 +27,13 @@ const routeSchema = new mongoose.Schema(
       required: true,
     },
 
+    // Optional, ordered monitored locations the route passes through. Without
+    // them a route has no measurement-based traffic status.
+    waypoints: {
+      type: [{ type: mongoose.Schema.Types.ObjectId, ref: "TrafficLocation" }],
+      default: undefined,
+    },
+
     distance: {
       type: Number,
       required: true,

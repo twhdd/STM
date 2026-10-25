@@ -1,5 +1,14 @@
 const mongoose = require("mongoose");
 const Route = require("../models/Route");
+const { loadRouteTrafficConfig } = require("../config/routeTraffic");
+const {
+  loadLatestObservations,
+  rankRoutes,
+  selectBasis,
+  summarizeRouteTraffic,
+} = require("./routeTrafficService");
+
+const routeTrafficConfig = loadRouteTrafficConfig();
 
 function createRecommendationError(message, statusCode) {
   const error = new Error(message);
@@ -7,16 +16,47 @@ function createRecommendationError(message, statusCode) {
   return error;
 }
 
-// Traffic levels ranked from best to worst
-const trafficScore = {
-  LOW: 1,
-  MEDIUM: 2,
-  HIGH: 3,
-  SEVERE: 4,
-};
+const FALLBACK_TEXT = Object.freeze({
+  NO_WAYPOINTS: "at least one route option has no monitored waypoints",
+  NO_FRESH_DATA: "at least one route option has no fresh measurements at its waypoints",
+  PARTIAL_DATA: "measurements cover only some waypoints of at least one route option",
+});
 
-// Recommend the best route between two locations
-const recommendRoute = async (startLocation, endLocation) => {
+function buildReason({ basis, fallbackReason }, best, freshnessMs) {
+  if (basis === "LIVE_MEASUREMENTS") {
+    const { level, coverage, sources, conflicting } = best.status;
+    let reason =
+      `Recommended using live measurements: ${level.toLowerCase()} traffic along ` +
+      `${coverage.total} monitored waypoint(s), readings no older than ${freshnessMs / 1000} seconds`;
+    if (sources.includes("SIMULATOR")) reason += " (simulated measurements)";
+    reason += `. Stored time estimate: ${best.route.estimatedTime} minutes.`;
+    if (conflicting) {
+      reason += " Readings along the route conflict; the worst reading was used.";
+    }
+    return reason;
+  }
+
+  return (
+    `Static route data, not live traffic (${FALLBACK_TEXT[fallbackReason]}): ` +
+    `recommended using the stored traffic level (${best.route.trafficLevel}) and ` +
+    `stored time estimate (${best.route.estimatedTime} minutes).`
+  );
+}
+
+const presentRoute = ({ route, status }) => ({
+  routeId: route.routeId,
+  name: route.name,
+  distance: route.distance,
+  estimatedTime: route.estimatedTime,
+  trafficLevel: route.trafficLevel,
+  status: route.status,
+  trafficStatus: status,
+});
+
+// Recommend the best route between two locations. Routes are ranked on live
+// measurements at their waypoints only when every option has fresh data at all
+// of its waypoints; otherwise the stored route data is used and labelled static.
+const recommendRoute = async (startLocation, endLocation, options = {}) => {
   if (
     typeof startLocation !== "string" ||
     !mongoose.isValidObjectId(startLocation) ||
@@ -39,38 +79,29 @@ const recommendRoute = async (startLocation, endLocation) => {
     throw createRecommendationError("No available routes found", 404);
   }
 
-  // Sort routes by traffic level first, then estimated travel time
-  routes.sort((a, b) => {
-    const trafficDifference =
-      trafficScore[a.trafficLevel] - trafficScore[b.trafficLevel];
+  const now = options.now ?? new Date();
+  const freshnessMs = options.freshnessMs ?? routeTrafficConfig.freshnessMs;
 
-    if (trafficDifference !== 0) {
-      return trafficDifference;
-    }
+  const waypointIds = [
+    ...new Set(routes.flatMap((route) => (route.waypoints || []).map(String))),
+  ];
+  const observations = await loadLatestObservations(waypointIds, now);
 
-    return a.estimatedTime - b.estimatedTime;
-  });
-
-  const recommendedRoute = routes[0];
+  const entries = routes.map((route) => ({
+    route,
+    status: summarizeRouteTraffic(route, observations, now, freshnessMs),
+  }));
+  const selection = selectBasis(entries.map((entry) => entry.status));
+  const [best, ...rest] = rankRoutes(entries, selection.basis);
 
   return {
-    recommendedRoute: {
-      routeId: recommendedRoute.routeId,
-      name: recommendedRoute.name,
-      distance: recommendedRoute.distance,
-      estimatedTime: recommendedRoute.estimatedTime,
-      trafficLevel: recommendedRoute.trafficLevel,
-      status: recommendedRoute.status,
-    },
-    alternatives: routes.slice(1).map((route) => ({
-      routeId: route.routeId,
-      name: route.name,
-      distance: route.distance,
-      estimatedTime: route.estimatedTime,
-      trafficLevel: route.trafficLevel,
-      status: route.status,
-    })),
-    reason: `Recommended because it has ${recommendedRoute.trafficLevel.toLowerCase()} traffic and an estimated travel time of ${recommendedRoute.estimatedTime} minutes.`,
+    recommendedRoute: presentRoute(best),
+    alternatives: rest.map(presentRoute),
+    basis: selection.basis,
+    fallbackReason: selection.fallbackReason,
+    freshnessThresholdSeconds: freshnessMs / 1000,
+    evaluatedAt: now.toISOString(),
+    reason: buildReason(selection, best, freshnessMs),
   };
 };
 

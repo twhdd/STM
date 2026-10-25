@@ -14,6 +14,7 @@ export function getMonitoringStatuses({
   analytics,
   locations,
   alerts,
+  activeAlertCount: explicitActiveAlertCount,
   feedErrors,
   realtimeStatus,
 }) {
@@ -26,9 +27,12 @@ export function getMonitoringStatuses({
   const alertsAvailable = !feedUnavailable("Traffic alerts");
   const measurementCount = analytics?.totalMeasurements;
   const locationCount = Array.isArray(locations) ? locations.length : 0;
-  const activeAlertCount = Array.isArray(alerts)
-    ? alerts.filter((alert) => alert.status === "ACTIVE").length
-    : 0;
+  // The alert feed is only a recent page, so a server-side total is preferred.
+  const activeAlertCount = Number.isInteger(explicitActiveAlertCount)
+    ? explicitActiveAlertCount
+    : Array.isArray(alerts)
+      ? alerts.filter((alert) => alert.status === "ACTIVE").length
+      : 0;
 
   return [
     {

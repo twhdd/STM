@@ -71,7 +71,9 @@ test("filters directed route pairs, excludes blocked routes, and ranks by traffi
     ["LOW-SLOW", "HIGH-FAST"]
   );
   assert.equal(result.recommendedRoute.status, "AVAILABLE");
-  assert.match(result.reason, /low traffic/);
+  assert.equal(result.basis, "STATIC_ROUTE_DATA");
+  assert.match(result.reason, /stored traffic level \(LOW\)/);
+  assert.doesNotMatch(result.reason, /live measurements/i);
 });
 
 test("rejects malformed location IDs before querying routes", async () => {
@@ -173,7 +175,8 @@ test("controller returns the recommendation response contract on success", async
   assert.equal(response.statusCode, 200);
   assert.equal(response.body.recommendedRoute.routeId, "ROUTE-1");
   assert.deepEqual(response.body.alternatives, []);
-  assert.match(response.body.reason, /low traffic/);
+  assert.equal(response.body.basis, "STATIC_ROUTE_DATA");
+  assert.match(response.body.reason, /static route data, not live traffic/i);
 });
 
 test("controller returns 404 for a valid pair with no matching routes", async () => {

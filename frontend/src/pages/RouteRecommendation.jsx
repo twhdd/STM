@@ -1,6 +1,7 @@
 
 import { useEffect, useState } from "react";
 import api from "../services/api";
+import { describeBasis, describeRouteTraffic } from "../utils/routeRecommendationDisplay";
 import "./RouteRecommendation.css";
 
 const trafficClass = {
@@ -31,7 +32,29 @@ function uniqueLocations(routes, field) {
   return [...locations.values()];
 }
 
-function RouteCard({ route, recommended = false }) {
+function BasisBanner({ result }) {
+  const basis = describeBasis(result);
+
+  return (
+    <div
+      className={`route-basis-banner ${basis.live ? "is-live" : "is-static"}`}
+      role="note"
+    >
+      <strong>{basis.title}</strong>
+      <p>{basis.detail}</p>
+      {Number.isFinite(result?.freshnessThresholdSeconds) && result?.evaluatedAt && (
+        <p className="route-basis-meta">
+          Freshness window: {result.freshnessThresholdSeconds} seconds · Evaluated{" "}
+          {new Date(result.evaluatedAt).toLocaleTimeString()}
+        </p>
+      )}
+    </div>
+  );
+}
+
+function RouteCard({ route, recommended = false, rankedOnLive = false }) {
+  const live = describeRouteTraffic(route, { rankedOnLive });
+
   return (
     <article className={`route-result-card${recommended ? " route-result-best" : ""}`}>
       <div className="route-result-top">
@@ -48,17 +71,25 @@ function RouteCard({ route, recommended = false }) {
           <strong>{route.distance ?? "—"}</strong>
         </div>
         <div className="route-metric">
-          <span className="route-metric-label">Estimated time</span>
+          <span className="route-metric-label">Stored time estimate</span>
           <strong>
             {route.estimatedTime != null ? `${route.estimatedTime} min` : "—"}
           </strong>
         </div>
         <div className="route-metric">
-          <span className="route-metric-label">Traffic</span>
+          <span className="route-metric-label">Stored traffic level</span>
           <span className={`badge ${trafficClass[route.trafficLevel] || "badge-neutral"}`}>
             {formatTraffic(route.trafficLevel)}
           </span>
         </div>
+      </div>
+
+      <div className="route-live-status">
+        <span className="route-metric-label">Live traffic</span>
+        <span className={`badge ${trafficClass[live.level] || "badge-neutral"}`}>
+          {live.label}
+        </span>
+        <span className="route-live-detail">{live.detail}</span>
       </div>
 
       <div className="route-result-footer">
@@ -151,7 +182,7 @@ export function RouteRecommendation() {
 
       setResult(response);
     } catch (err) {
-      setError(err.message || "Unable to recommend a stored route. Please try again.");
+      setError(err.message || "Unable to recommend a route. Please try again.");
     } finally {
       setLoading(false);
     }
@@ -169,8 +200,10 @@ export function RouteRecommendation() {
       <div className="page-header">
         <h2 className="page-title">Route Recommendation</h2>
         <p className="page-description">
-          Compare predefined routes between locations. The backend ranks stored,
-          non-blocked routes by traffic level and estimated travel time.
+          Compare predefined routes between locations. Routes are ranked on live
+          measurements only when every option has fresh readings at all of its
+          waypoints; otherwise stored route data is used and clearly labelled as
+          not live.
         </p>
       </div>
 
@@ -179,7 +212,7 @@ export function RouteRecommendation() {
           <div>
             <h3 className="card-title">Plan a Route</h3>
             <p className="card-subtitle">
-              Choose an origin and destination with a stored route.
+              Choose an origin and destination that have a defined route.
             </p>
           </div>
         </div>
@@ -272,7 +305,7 @@ export function RouteRecommendation() {
                   !endLocation
                 }
               >
-                {loading ? "Finding stored route..." : "Recommend Stored Route"}
+                {loading ? "Finding route..." : "Recommend Route"}
               </button>
               <button
                 type="button"
@@ -307,7 +340,7 @@ export function RouteRecommendation() {
       {loading && (
         <div className="card loading-card route-feedback" role="status">
           <div className="auth-loading-spinner" />
-          <p>Comparing stored routes...</p>
+          <p>Comparing routes...</p>
         </div>
       )}
 
@@ -315,19 +348,25 @@ export function RouteRecommendation() {
         <section className="route-results-section" aria-live="polite">
           <div className="route-results-heading">
             <div>
-              <h3 className="card-title">Stored Route Results</h3>
+              <h3 className="card-title">Route Results</h3>
               <p className="card-subtitle">
                 {result.alternatives?.length || 0} alternative route(s) found
               </p>
             </div>
           </div>
 
+          <BasisBanner result={result} />
+
           <div className="route-reason-card">
             <strong>Why this route?</strong>
             <p>{result.reason || "This is the best route returned by the system."}</p>
           </div>
 
-          <RouteCard route={result.recommendedRoute} recommended />
+          <RouteCard
+            route={result.recommendedRoute}
+            recommended
+            rankedOnLive={result.basis === "LIVE_MEASUREMENTS"}
+          />
 
           {Array.isArray(result.alternatives) && result.alternatives.length > 0 && (
             <div className="route-alternatives">
@@ -337,6 +376,7 @@ export function RouteRecommendation() {
                   <RouteCard
                     key={route.routeId || `${route.name}-${index}`}
                     route={route}
+                    rankedOnLive={result.basis === "LIVE_MEASUREMENTS"}
                   />
                 ))}
               </div>

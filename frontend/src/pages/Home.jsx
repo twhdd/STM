@@ -6,6 +6,7 @@ import {
   getMonitoringStatuses,
   getRecentAlerts,
 } from "../utils/dashboardSummary";
+import { readPagination, withPageQuery } from "../utils/pagination";
 
 export function Home() {
   const { token } = useAuth();
@@ -13,6 +14,8 @@ export function Home() {
   const [locations, setLocations] = useState([]);
   const [alerts, setAlerts] = useState([]);
   const [congestionEvents, setCongestionEvents] = useState([]);
+  const [eventsTotal, setEventsTotal] = useState(0);
+  const [activeAlertTotal, setActiveAlertTotal] = useState(undefined);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [feedErrors, setFeedErrors] = useState([]);
@@ -88,12 +91,14 @@ export function Home() {
 
     async function fetchDashboard() {
       try {
-        const [analyticsRes, locationsRes, alertsRes, eventsRes] = await Promise.allSettled([
-          api.get("/traffic-analytics"),
-          api.get("/traffic-locations"),
-          api.get("/traffic-alerts"),
-          api.get("/congestion-events"),
-        ]);
+        const [analyticsRes, locationsRes, alertsRes, eventsRes, activeAlertsRes] =
+          await Promise.allSettled([
+            api.get("/traffic-analytics"),
+            api.get("/traffic-locations"),
+            api.get(withPageQuery("/traffic-alerts", { limit: 5 })),
+            api.get(withPageQuery("/congestion-events", { limit: 10 })),
+            api.get(withPageQuery("/traffic-alerts", { status: "ACTIVE", limit: 1 })),
+          ]);
 
         if (!isCancelled) {
           const feedErrors = [
@@ -101,6 +106,11 @@ export function Home() {
             ["Traffic locations", locationsRes, (response) => Array.isArray(response?.locations)],
             ["Traffic alerts", alertsRes, (response) => Array.isArray(response?.alerts)],
             ["Congestion events", eventsRes, (response) => Array.isArray(response?.events)],
+            [
+              "Traffic alerts",
+              activeAlertsRes,
+              (response) => Number.isInteger(response?.pagination?.total),
+            ],
           ].flatMap(([label, result, isValid]) => {
             if (result.status === "rejected") {
               return [`${label}: ${result.reason?.message || "Unable to load data."}`];
@@ -128,9 +138,18 @@ export function Home() {
 
           if (eventsRes.status === "fulfilled" && Array.isArray(eventsRes.value?.events)) {
             setCongestionEvents(eventsRes.value.events);
+            setEventsTotal(readPagination(eventsRes.value, eventsRes.value.events.length).total);
           } else {
             setCongestionEvents([]);
+            setEventsTotal(0);
           }
+
+          setActiveAlertTotal(
+            activeAlertsRes.status === "fulfilled" &&
+              Number.isInteger(activeAlertsRes.value?.pagination?.total)
+              ? activeAlertsRes.value.pagination.total
+              : undefined
+          );
 
           setFeedErrors(feedErrors);
           setError(null);
@@ -208,6 +227,7 @@ export function Home() {
     analytics,
     locations,
     alerts,
+    activeAlertCount: activeAlertTotal,
     feedErrors,
     realtimeStatus,
   });
@@ -588,7 +608,12 @@ export function Home() {
         <div className="card dashboard-card">
           <div className="card-header">
             <h3 className="card-title">Congestion Incidents</h3>
-            <span className="card-subtitle">{congestionEvents.length} recorded event(s)</span>
+            <span className="card-subtitle">
+              {eventsTotal} recorded event(s)
+              {eventsTotal > congestionEvents.length
+                ? ` — showing the ${congestionEvents.length} most recent`
+                : ""}
+            </span>
           </div>
           <div className="card-body">
             {congestionEvents.length === 0 ? (

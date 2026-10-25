@@ -2,7 +2,10 @@ import { useEffect, useState } from "react";
 import api from "../services/api";
 import { useAuth } from "../context/useAuth";
 import { canAccessPage, hasRole, roleAccess } from "../config/roleAccess";
+import { readPagination, withPageQuery } from "../utils/pagination";
 import "./SignalOptimization.css";
+
+const MEASUREMENT_PICKER_SIZE = 25;
 
 function getLocationName(location) {
   if (location && typeof location === "object") {
@@ -28,6 +31,9 @@ export function SignalOptimization() {
   const { user } = useAuth();
   const [signals, setSignals] = useState([]);
   const [measurements, setMeasurements] = useState([]);
+  const [measurementsTotal, setMeasurementsTotal] = useState(0);
+  const [measurementsLoading, setMeasurementsLoading] = useState(false);
+  const [measurementsError, setMeasurementsError] = useState("");
   const [signalId, setSignalId] = useState("");
   const [measurementId, setMeasurementId] = useState("");
   const [loading, setLoading] = useState(true);
@@ -66,30 +72,16 @@ export function SignalOptimization() {
       setLoadError("");
 
       try {
-        const [signalsResponse, measurementsResponse] = await Promise.all([
-          api.get("/traffic-signals"),
-          api.get("/traffic-measurements"),
-        ]);
+        const signalsResponse = await api.get("/traffic-signals");
 
         if (!Array.isArray(signalsResponse?.signals)) {
           throw new Error("The server returned an invalid traffic signals response.");
         }
-        if (!Array.isArray(measurementsResponse?.measurements)) {
-          throw new Error("The server returned an invalid traffic measurements response.");
-        }
 
         if (!cancelled) {
           setSignals(signalsResponse.signals);
-          setMeasurements(measurementsResponse.measurements);
           setSignalId((current) =>
             signalsResponse.signals.some((signal) => signal._id === current)
-              ? current
-              : ""
-          );
-          setMeasurementId((current) =>
-            measurementsResponse.measurements.some(
-              (measurement) => measurement._id === current
-            )
               ? current
               : ""
           );
@@ -108,6 +100,61 @@ export function SignalOptimization() {
       cancelled = true;
     };
   }, [canLoadOptimizationData, refreshIndex]);
+
+  // Measurements are loaded per selected signal location (newest first), so the
+  // picker is never filtered from a truncated global list.
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadMeasurements() {
+      if (!selectedSignalLocationId) {
+        setMeasurements([]);
+        setMeasurementsTotal(0);
+        setMeasurementsError("");
+        setMeasurementsLoading(false);
+        return;
+      }
+
+      setMeasurementsLoading(true);
+      setMeasurementsError("");
+
+      try {
+        const response = await api.get(
+          withPageQuery("/traffic-measurements", {
+            location: selectedSignalLocationId,
+            limit: MEASUREMENT_PICKER_SIZE,
+          })
+        );
+
+        if (!Array.isArray(response?.measurements)) {
+          throw new Error("The server returned an invalid traffic measurements response.");
+        }
+
+        if (!cancelled) {
+          setMeasurements(response.measurements);
+          setMeasurementsTotal(readPagination(response, response.measurements.length).total);
+          setMeasurementId((current) =>
+            response.measurements.some((measurement) => measurement._id === current)
+              ? current
+              : ""
+          );
+        }
+      } catch (error) {
+        if (!cancelled) {
+          setMeasurements([]);
+          setMeasurementsTotal(0);
+          setMeasurementsError(error.message || "Unable to load traffic measurements.");
+        }
+      } finally {
+        if (!cancelled) setMeasurementsLoading(false);
+      }
+    }
+
+    loadMeasurements();
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedSignalLocationId, refreshIndex]);
 
   async function handleSubmit(event) {
     event.preventDefault();
@@ -207,7 +254,6 @@ export function SignalOptimization() {
   }
 
   const noSignals = signals.length === 0;
-  const noMeasurements = measurements.length === 0;
 
   return (
     <div className="page-container">
@@ -226,23 +272,26 @@ export function SignalOptimization() {
           </p>
         </div>
 
-        {(noSignals || noMeasurements) && (
+        {noSignals && (
           <div className="alert-banner alert-warning" role="status">
-            <div>
-              {noSignals && noMeasurements
-                ? "No traffic signals or measurements are available."
-                : noSignals
-                  ? "No traffic signals are available."
-                  : "No traffic measurements are available."}
-            </div>
+            <div>No traffic signals are available.</div>
           </div>
         )}
 
-        {signalId && !noMeasurements && availableMeasurements.length === 0 && (
-          <div className="alert-banner alert-warning" role="status">
-            No traffic measurements are available for the selected signal's location.
+        {signalId && measurementsError && (
+          <div className="alert-banner alert-danger" role="alert">
+            <div>{measurementsError}</div>
           </div>
         )}
+
+        {signalId &&
+          !measurementsLoading &&
+          !measurementsError &&
+          availableMeasurements.length === 0 && (
+            <div className="alert-banner alert-warning" role="status">
+              No traffic measurements are available for the selected signal's location.
+            </div>
+          )}
 
         {!canOptimize && (
           <div className="alert-banner alert-warning" role="note">
@@ -299,11 +348,20 @@ export function SignalOptimization() {
                 setResult(null);
                 setSubmitError("");
               }}
-              disabled={!signalId || availableMeasurements.length === 0 || submitting}
+              disabled={
+                !signalId ||
+                measurementsLoading ||
+                availableMeasurements.length === 0 ||
+                submitting
+              }
               required
             >
               <option value="">
-                {signalId ? "Choose a measurement" : "Choose a signal first"}
+                {!signalId
+                  ? "Choose a signal first"
+                  : measurementsLoading
+                    ? "Loading measurements..."
+                    : "Choose a measurement"}
               </option>
               {availableMeasurements.map((measurement) => (
                 <option key={measurement._id} value={measurement._id}>
@@ -312,6 +370,12 @@ export function SignalOptimization() {
                 </option>
               ))}
             </select>
+            {measurementsTotal > availableMeasurements.length && (
+              <span className="signal-optimization-hint">
+                Showing the {availableMeasurements.length} most recent of {measurementsTotal}{" "}
+                measurements for this location.
+              </span>
+            )}
             {selectedMeasurement && (
               <span className="signal-optimization-hint">
                 {getLocationName(selectedMeasurement.location)} ·{" "}
