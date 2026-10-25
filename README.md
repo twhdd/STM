@@ -1,300 +1,348 @@
-# Smart Traffic Management System
+# Smart Traffic Management System (STM)
 
-A software engineering project for intelligent urban traffic monitoring and management, combining real-time traffic data, congestion detection, traffic signal optimization, emergency vehicle prioritization, route recommendations, and traffic analytics.
+STM is a full-stack web application for urban traffic monitoring and management, built as a Software Engineering course project. Traffic authorities, traffic police, emergency services and citizens use one role-based dashboard to view traffic measurements, congestion events and alerts, adjust signal timing, give emergency vehicles signal priority, compare routes, and submit incident reports. A separate offline computer-vision service (**Traffic Vision**) analyses *recorded* video files to count and track vehicles.
 
----
+> **Project status: active development, academic project.** STM is not production-hardened. Traffic data comes from API submissions, seeded test data, an optional development simulator, or recorded-video analysis. **There is no live camera or live traffic-feed integration.** See [Known limitations](#known-limitations-and-future-work).
 
-## Overview
+## Contents
 
-The **Smart Traffic Management System (STM)** is designed to assist traffic authorities, emergency services, traffic police, and citizens in monitoring and responding to urban traffic conditions.
-
-The system processes traffic-related data to support:
-
-- Traffic monitoring and analytics
-- Congestion and incident detection
-- Traffic signal optimization
-- Emergency vehicle prioritization
-- Alternate route recommendations
-- Traffic alerts and notifications
-- Historical traffic analysis
-
-The project is designed with a modular architecture so that additional AI and IoT-based components can be integrated as the system evolves.
-
----
-
-## Features
-
-### Traffic Management
-
-- Monitor traffic conditions and measurements
-- Manage traffic locations and signals
-- Detect and manage congestion events
-- Track traffic incidents and alerts
-- Analyze historical traffic data
-
-### Intelligent Traffic Control
-
-- Dynamic traffic signal optimization
-- Traffic-density-based signal decisions
-- Emergency vehicle prioritization
-- Green-corridor support for emergency vehicles
-
-### Route Management
-
-- Alternate route recommendations
-- Route management and analysis
-- Traffic-aware route decisions
-
-### Alerts & Analytics
-
-- Traffic alerts and notifications
-- Congestion and incident alerts
-- Traffic analytics
-- Report generation
-- Historical traffic data management
-
-### User Roles
-
-The system supports role-based functionality for different stakeholders.
-
-| Role | Responsibilities |
-|------|------------------|
-| **Admin** | Manage system-level resources, traffic signals, analytics and reports |
-| **Traffic Authority** | Monitor traffic, manage congestion and optimize signals |
-| **Traffic Police** | Monitor traffic and receive alerts |
-| **Emergency Service** | Request emergency priority and create green corridors |
-| **Citizen** | Report incidents, receive alerts and access route recommendations |
+1. [Key features](#key-features)
+2. [Architecture](#architecture)
+3. [Technology stack](#technology-stack)
+4. [Prerequisites](#prerequisites)
+5. [Repository structure](#repository-structure)
+6. [Installation and setup](#installation-and-setup)
+7. [Environment variables](#environment-variables)
+8. [Running the application](#running-the-application)
+9. [User roles and permissions](#user-roles-and-permissions)
+10. [API overview](#api-overview)
+11. [Traffic Vision workflow](#traffic-vision-workflow)
+12. [Traffic data processing and the development simulator](#traffic-data-processing-and-the-development-simulator)
+13. [Testing and verification](#testing-and-verification)
+14. [Database and test-data safety](#database-and-test-data-safety)
+15. [Known limitations and future work](#known-limitations-and-future-work)
+16. [Demo workflow](#demo-workflow)
+17. [Troubleshooting](#troubleshooting)
+18. [Development notes and license](#development-notes-and-license)
 
 ---
 
-## System Workflow
+## Key features
 
-```text
-┌─────────────────────────┐
-│    Traffic Data Sources │
-│ Sensors / GPS / CCTV    │
-│ Citizen Reports         │
-└────────────┬────────────┘
-             │
-             ▼
-┌─────────────────────────┐
-│    Traffic Monitoring   │
-└────────────┬────────────┘
-             │
-             ▼
-┌─────────────────────────┐
-│   Traffic Data Analysis │
-└────────────┬────────────┘
-             │
-             ▼
-┌─────────────────────────┐
-│ Congestion / Incident   │
-│       Detection         │
-└──────┬─────────┬────────┘
-       │         │
-       │         └─────────────────┐
-       ▼                           ▼
-┌───────────────┐          ┌──────────────────┐
-│ Signal        │          │ Emergency        │
-│ Optimization  │          │ Prioritization   │
-└───────┬───────┘          └────────┬─────────┘
-        │                           │
-        ▼                           ▼
- Traffic Signals             Green Corridor
-        │
-        └──────────────┬───────────────┐
-                       │               │
-                       ▼               ▼
-              Route Recommendation   Alerts
-                       │
-                       ▼
-                 Dashboards &
-                   Analytics
-```
+Every item below is implemented in the code. "Verified" means checked by running the application, not just by reading code or running mocked tests; see [Testing and verification](#testing-and-verification).
 
----
+| Area | What it does | Notes |
+|---|---|---|
+| **Authentication and roles** | JWT login (1-day expiry) and five roles enforced by the backend and mirrored in the UI navigation. | Public registration only creates `CITIZEN` accounts. |
+| **Traffic monitoring** | Paginated traffic measurements, congestion events, monitoring devices and locations; Socket.IO notifications refresh the feeds. | Data is only as fresh as what was submitted or simulated. |
+| **Congestion and alerts** | A `HIGH` or `SEVERE` measurement opens one congestion event and one alert per location; a `LOW` or `MEDIUM` reading clears them. Admin/Authority can also generate alerts manually. | Lifecycle rules are enforced by partial unique indexes. |
+| **Signal optimization** | Admin/Authority pick a signal and a measurement; green time is set to 20, 30, 45 or 60 s from vehicle count and average speed. | Rule-based thresholds, not a predictive model. |
+| **Emergency priority** | Admin/Emergency Service activate priority for a vehicle: the signal at its location goes to `NORTH_SOUTH` / 60 s, with the previous phase and green time saved; deactivation restores them. Signal optimization is refused (`409 EMERGENCY_OVERRIDE_ACTIVE`) while an override is active. | Activate/deactivate cycle checked manually once against the development database. |
+| **Route recommendation** | Compares predefined routes between two locations. Ranks on live measurements only when every candidate route is fully covered by fresh readings; otherwise falls back to stored route data and labels it. | See [Route recommendation behaviour](#route-recommendation-behaviour). |
+| **Citizen reporting** | Any signed-in user can file a report; Admin/Authority/Police review them. | |
+| **Analytics** | Aggregated summary endpoint and dashboard / Alerts & Analytics views. | |
+| **Traffic Vision** | Upload a recorded video, queue it, run YOLO detection (optional tracking) in a Python subprocess, and view metrics, history and downloads in the UI. | Recorded files only. |
 
 ## Architecture
 
-The project follows a modular application architecture:
+```mermaid
+flowchart LR
+    subgraph Browser
+        UI["React SPA (Vite)"]
+    end
+    subgraph Backend["Backend (Node.js / Express 5)"]
+        API["REST API /api/*"]
+        IO["Socket.IO"]
+        PROC["Measurement processing + recovery worker"]
+        SIM["Dev traffic simulator (opt-in)"]
+        TVW["Traffic Vision worker (queue + lease)"]
+    end
+    DB[("MongoDB via Mongoose")]
+    PY["ai-service: python -m traffic_vision.cli (YOLO + OpenCV)"]
+    FS[("CV data dir: uploads / outputs")]
 
-```text
-STM
-│
-├── frontend/
-│   └── Web-based user interface
-│
-├── backend/
-│   ├── Controllers
-│   ├── Routes
-│   ├── Models
-│   ├── Services
-│   ├── Middleware
-│   └── Database Configuration
-│
-├── ai-service/
-│   └── Offline recorded-video vehicle detection and tracking MVP
-│
-└── simulator/
-    └── Traffic simulation components
+    UI -- "HTTP + JWT" --> API
+    UI -- "Socket.IO (JWT handshake)" --> IO
+    API --> DB
+    SIM --> PROC
+    API --> PROC
+    PROC --> DB
+    PROC --> IO
+    API -- "raw video upload" --> FS
+    API -- "create job" --> DB
+    TVW -- "claim job" --> DB
+    TVW -- "spawn subprocess" --> PY
+    PY -- "reads video, writes JSON" --> FS
+    TVW -- "metrics, status" --> DB
+    TVW --> IO
 ```
 
-> **Note:** `ai-service` currently provides an isolated offline vehicle-detection and optional tracking MVP for recorded videos. It is not integrated with backend measurements or live CCTV. A development-only backend traffic simulator is documented below.
+- **Frontend** (`frontend/`): React 19 single-page app with React Router 7. It calls the REST API with a JWT and listens for Socket.IO notifications. The session is kept in memory; **a full page reload signs the user out**.
+- **Backend** (`backend/`): Express 5 REST API, Socket.IO server, Mongoose models, business-logic services, a measurement-processing recovery worker, an optional development simulator and the Traffic Vision worker.
+- **Database**: MongoDB (Atlas or local) through Mongoose.
+- **AI service** (`ai-service/`): not a server. A Python CLI that the backend worker runs as a subprocess for each job. It reads a video file and writes a JSON result; it never touches the database or the API.
+- **Data flow for traffic data**: a measurement is saved with `source` set to `API` (or `SIMULATOR`), then processed to detect congestion, create or clear events and alerts, and publish Socket.IO events. Traffic Vision results are stored on the job document and are **not** converted into traffic measurements.
 
----
+## Technology stack
 
-## Technology Stack
+| Layer | Technology (versions from `package.json` / `requirements.txt`) |
+|---|---|
+| Frontend | React 19, React Router 7, Vite 8, ESLint 10, socket.io-client 4 |
+| Backend | Node.js, Express 5, Mongoose 9 (MongoDB driver 7), Socket.IO 4, jsonwebtoken, bcryptjs, dotenv, cors; nodemon for development |
+| Database | MongoDB |
+| AI service | Python, Ultralytics 8.4.182 (YOLO, optional ByteTrack), opencv-python 4.12.0.88 |
+| Tests | Node's built-in `node --test` (backend and frontend utilities), Python `unittest` |
 
-### Frontend
+## Prerequisites
 
-- React
-- Vite
-- JavaScript
-- HTML5
-- CSS3
+- **Node.js** `^20.19.0` or `>=22.12.0` (required by the installed Vite 8 and Mongoose 9) and npm.
+- **MongoDB**: a reachable instance (local or Atlas) and its connection string.
+- **Python 3.10+** with `pip`, only if you want Traffic Vision (`ai-service/README.md` states 3.10 or newer; development used 3.11).
+- **YOLO weights** (a `.pt` detection checkpoint), only for Traffic Vision. Weights and videos are not in the repository (they are git-ignored); obtain them separately.
+- Git.
 
-### Backend
-
-- Node.js
-- Express.js
-- JavaScript
-- REST APIs
-
-### Database
-
-- MySQL
-
-### Development Tools
-
-- Git
-- GitHub
-- Visual Studio Code
-- npm
-
----
-
-## Backend Modules
-
-The backend is organized into separate controllers, routes, models, and services.
-
-### Controllers
-
-The system currently contains controllers for:
-
-- Authentication
-- Congestion Events
-- Emergency Priority
-- Emergency Vehicles
-- Monitoring Devices
-- Routes
-- Route Recommendations
-- Signal Optimization
-- Traffic Alerts
-- Traffic Analytics
-- Traffic Locations
-- Traffic Measurements
-- Traffic Signals
-
-### Services
-
-Core business logic is separated into services for:
-
-- Congestion detection
-- Emergency priority
-- Route recommendation
-- Signal optimization
-- Traffic alerts
-- Traffic analytics
-
-This separation allows the application to remain modular and easier to maintain as additional functionality is introduced.
-
----
-
-## Project Structure
+## Repository structure
 
 ```text
 STM/
-│
 ├── backend/
-│   ├── config/
-│   ├── controllers/
-│   ├── middleware/
-│   ├── models/
-│   ├── routes/
-│   ├── services/
-│   ├── package.json
-│   └── server.js
-│
+│   ├── server.js              # app wiring, route mounting, startup / shutdown
+│   ├── config/                # database.js, trafficVision.js, routeTraffic.js
+│   ├── controllers/           # request handlers (15)
+│   ├── routes/                # Express routers (15)
+│   ├── services/              # business logic, workers, simulator, realtime
+│   ├── models/                # Mongoose models (12)
+│   ├── middleware/            # authMiddleware.js (JWT + role checks)
+│   ├── socket/                # Socket.IO server
+│   ├── utils/                 # pagination.js
+│   ├── scripts/               # seed-test-accounts, seed-test-data, migrate-congestion-lifecycle
+│   └── tests/                 # node --test suites
 ├── frontend/
-│   ├── public/
-│   ├── src/
-│   ├── package.json
-│   └── vite.config.js
-│
+│   ├── src/pages/             # Home, TrafficMonitoring, SignalOptimization, EmergencyPriority,
+│   │                          # RouteRecommendation, AlertsAnalytics, CitizenReporting, Login
+│   ├── src/components/        # layout, common (Pager, ProtectedRoute), trafficVision
+│   ├── src/config/roleAccess.js
+│   ├── src/services/          # api.js, realtime.js, trafficVisionService.js
+│   └── src/utils/             # helpers with node --test files
 ├── ai-service/
-│
-├── simulator/
-│
-├── .gitignore
+│   ├── traffic_vision/        # cli, detector, tracking, metrics, output, runner, validation
+│   ├── tests/                 # unittest suites (synthetic detections)
+│   ├── requirements.txt
+│   └── README.md              # detailed CLI and metric definitions
+├── simulator/                 # empty placeholder; the development simulator lives in
+│                              # backend/services/trafficSimulatorService.js
 └── README.md
 ```
 
----
-
-## Getting Started
-
-### Prerequisites
-
-Make sure the following are installed:
-
-- Node.js
-- npm
-- MySQL
-- Git
-
-### Clone the Repository
+## Installation and setup
 
 ```bash
 git clone https://github.com/twhdd/STM.git
 cd STM
 ```
 
-### Backend Setup
+**1. Backend**
 
 ```bash
 cd backend
 npm install
 ```
 
-Configure the database connection and required environment variables before starting the backend.
+Create `backend/.env` (it is git-ignored; never commit it) from the [variables below](#environment-variables). At minimum:
 
-Then run:
+```dotenv
+PORT=5000
+MONGO_URI=<your MongoDB connection string>
+JWT_SECRET=<a long random string>
+```
+
+**2. Frontend**
 
 ```bash
-npm start
+cd frontend
+npm install
 ```
 
-### Development Role-Test Accounts
+Optional `frontend/.env`:
 
-The backend provides an opt-in seed command for local role-based frontend testing. It only runs with `NODE_ENV=development`, requires explicit confirmation, and only connects when `STM_TEST_DATABASE_NAME` (which must contain `test`) matches the database in `MONGO_URI`. Use a dedicated test database, never a shared or production database.
+```dotenv
+VITE_API_BASE_URL=http://localhost:5000/api
+```
 
-When its `MONGO_URI` has no database path, the development application selects `stm_test` by default; `STM_TEST_DATABASE_NAME=stm_test` makes that target explicit. From `backend/` in PowerShell, verify/create the accounts in that same development database and enter a password at the hidden prompt:
+**3. AI service (only for Traffic Vision)**
 
 ```powershell
-$env:NODE_ENV = "development"
-$env:STM_TEST_DATABASE_NAME = "stm_test"
-$env:STM_TEST_ACCOUNTS_CONFIRM = "YES"
-$secret = Read-Host "Test account password" -AsSecureString
-$env:STM_TEST_ACCOUNT_PASSWORD = [System.Net.NetworkCredential]::new("", $secret).Password
-npm run seed:test-accounts
-Remove-Item Env:STM_TEST_ACCOUNT_PASSWORD, Env:STM_TEST_ACCOUNTS_CONFIRM, Env:STM_TEST_DATABASE_NAME
+cd ai-service
+python -m venv .venv
+.venv\Scripts\activate
+pip install -r requirements.txt
 ```
 
-`JWT_SECRET` must also be configured for login verification (the backend `.env` may provide it). The password must be at least 16 characters and include lowercase, uppercase, numeric, and symbol characters. The seed uses the existing bcrypt hashing cost, retains existing accounts and passwords, refuses role conflicts, and verifies all five accounts through the local login endpoint without displaying credentials or tokens.
+On macOS/Linux use `source .venv/bin/activate`. Then point the backend at this interpreter and at your weights with `STM_CV_PYTHON` and `STM_CV_MODEL_PATH`.
 
-### STM Test Traffic Data
+## Environment variables
 
-To seed repeatable traffic data into the dedicated `stm_test` database, run from `backend/` in PowerShell. The script requires the explicit development, target-database, and confirmation settings below. `MONGO_URI` must point at the intended test cluster; if its URI path names a database, it must be `stm_test`. Without a database path, the script passes `stm_test` explicitly as Mongoose's `dbName`. The five existing test accounts must already exist with their intended roles; this command does not create or modify accounts.
+All names below were found in the code. Do not commit real values.
+
+### Core (backend `.env`)
+
+| Variable | Purpose | Default |
+|---|---|---|
+| `MONGO_URI` | MongoDB connection string. **Required**; startup fails without it. | none |
+| `JWT_SECRET` | Signing key for HS256 access tokens. **Required** for login and every authenticated request. | none |
+| `PORT` | Backend HTTP port. | `5000` |
+| `NODE_ENV` | `development` is required by the seed, migration and simulator tooling; those tools refuse `production`. | unset |
+| `STM_TEST_DATABASE_NAME` | Database name to use. Must contain `test`. See [Database safety](#database-and-test-data-safety). | `stm_test` unless `NODE_ENV=production` |
+| `STM_ROUTE_TRAFFIC_FRESHNESS_MS` | Maximum age of a measurement for route ranking to count it as fresh (1000 to 3600000). | `45000` |
+
+### Frontend
+
+| Variable | Purpose | Default |
+|---|---|---|
+| `VITE_API_BASE_URL` | API base URL (also used to derive the Socket.IO address). | `http://localhost:5000/api` |
+
+### Traffic Vision (backend)
+
+| Variable | Purpose | Default |
+|---|---|---|
+| `STM_CV_PYTHON` | Python executable used to run the CLI. | `python` |
+| `STM_CV_MODEL_PATH` | Path to the YOLO weights (`.pt`). | unset |
+| `STM_CV_DATA_DIR` | Root for `uploads/` and `outputs/`. | `<OS temp dir>/stm-cv-private` |
+| `STM_CV_MAX_UPLOAD_BYTES` | Maximum upload size. | `524288000` (500 MB) |
+| `STM_CV_TIMEOUT_MS` | Per-job subprocess timeout. | `1800000` (30 min) |
+| `STM_CV_CONCURRENCY` | Jobs processed at once. | `1` |
+| `STM_CV_QUEUE_CAPACITY` | Extra jobs allowed to wait. | `10` |
+| `STM_CV_RETENTION_DAYS` | Days before stored files expire. | `7` |
+| `STM_CV_POLL_INTERVAL_MS` | Worker polling interval. | `1000` |
+| `STM_CV_DEVICE` | `auto`, `cpu` or a GPU index. | `auto` |
+| `STM_CV_CONFIDENCE` | Detection confidence threshold. | `0.25` |
+
+### Development tooling only (these gate writes; see the safety section)
+
+`STM_TEST_DATA_CONFIRM`, `STM_TEST_ACCOUNTS_CONFIRM`, `STM_TEST_ACCOUNT_PASSWORD`, `STM_RUN_TRAFFIC_PROCESSING_INTEGRATION`, and the simulator settings `STM_TRAFFIC_SIMULATOR_ENABLED`, `STM_TRAFFIC_SIMULATOR_INTERVAL_MS` (default 15000, minimum 1000), `STM_TRAFFIC_SIMULATOR_DEVICE_COUNT` (default 3, range 1 to 20), `STM_TRAFFIC_SIMULATOR_SCENARIO` (default `normal`) and `STM_TRAFFIC_SIMULATOR_SEED`.
+
+## Running the application
+
+Use separate terminals.
+
+| Component | Directory | Command | Address |
+|---|---|---|---|
+| Backend (auto-reload) | `backend/` | `npm run dev` | `http://localhost:5000` (health check: `GET /api/health`) |
+| Backend (plain) | `backend/` | `npm start` | same |
+| Frontend | `frontend/` | `npm run dev` | `http://localhost:5173` (Vite default) |
+| Frontend production build | `frontend/` | `npm run build`, then `npm run preview` | `dist/` |
+| AI service | n/a | Started automatically by the backend worker per job | n/a |
+
+The frontend calls the API directly via `VITE_API_BASE_URL`; there is no dev proxy. The backend enables CORS for all origins.
+
+You need user accounts to sign in. Public registration creates `CITIZEN` accounts; staff accounts come from an Admin (`POST /api/auth/users`) or from the development seed scripts, which **write to the database** (see [safety](#database-and-test-data-safety)).
+
+## User roles and permissions
+
+Roles: `ADMIN`, `TRAFFIC_AUTHORITY`, `TRAFFIC_POLICE`, `EMERGENCY_SERVICE`, `CITIZEN`. The backend enforces permissions per endpoint; the sidebar only hides pages.
+
+| Capability | Admin | Authority | Police | Emergency | Citizen |
+|---|:-:|:-:|:-:|:-:|:-:|
+| Dashboard, Traffic Monitoring, Alerts & Analytics, Route Recommendation, Citizen Reporting pages | yes | yes | yes | yes | yes |
+| Read measurements, events, alerts, routes, locations, analytics | yes | yes | yes | yes | yes |
+| Read monitoring devices, traffic signals, emergency vehicles | yes | yes | yes | yes | no (403) |
+| Submit traffic measurements | yes | yes | yes | no | no |
+| Create locations, devices, signals, routes; set route waypoints | yes | yes | no | no | no |
+| Optimize signals; generate alerts; trigger congestion detection | yes | yes | no | no | no |
+| Activate / deactivate emergency priority; register emergency vehicles | yes | no | no | yes | no |
+| File citizen reports | yes | yes | yes | yes | yes |
+| Review citizen reports | yes | yes | yes | no | no |
+| Create accounts with any role | yes | no | no | no | no |
+| Submit and view Traffic Vision jobs | all jobs | all jobs | all jobs | own jobs | own jobs |
+
+Pages a role may not open redirect to the dashboard. Traffic Vision lives in the Traffic Monitoring page ("Video AI Analysis" tab); the API is open to any authenticated user, with non-staff users restricted to their own jobs.
+
+## API overview
+
+All routes are under `/api` and need `Authorization: Bearer <token>` unless marked public. Paths and methods below were read from `backend/routes/*.js`; role rules are in the table above.
+
+| Group | Endpoints |
+|---|---|
+| Health (public) | `GET /health` |
+| Auth | `POST /auth/register` (public, CITIZEN only), `POST /auth/login` (public), `POST /auth/users` (Admin) |
+| Traffic locations | `POST /traffic-locations`, `GET /traffic-locations`, `GET /traffic-locations/:id` |
+| Monitoring devices | `POST /monitoring-devices`, `GET /monitoring-devices`, `GET /monitoring-devices/:id` |
+| Traffic measurements | `POST /traffic-measurements`, `GET /traffic-measurements`, `GET /traffic-measurements/:id` |
+| Congestion events | `POST /congestion-events/detect`, `GET /congestion-events`, `GET /congestion-events/:id` |
+| Traffic alerts | `POST /traffic-alerts/generate`, `GET /traffic-alerts`, `GET /traffic-alerts/:id` |
+| Traffic signals | `POST /traffic-signals`, `GET /traffic-signals`, `GET /traffic-signals/:id` |
+| Signal optimization | `POST /signal-optimization/optimize` |
+| Emergency vehicles | `POST /emergency-vehicles`, `GET /emergency-vehicles`, `GET /emergency-vehicles/:id` |
+| Emergency priority | `POST /emergency-priority/activate`, `POST /emergency-priority/deactivate` (body: `vehicleId`) |
+| Routes | `POST /routes`, `GET /routes`, `GET /routes/:id`, `PATCH /routes/:id/waypoints` |
+| Route recommendation | `POST /route-recommendation/recommend` (body: `startLocation`, `endLocation`) |
+| Analytics | `GET /traffic-analytics` |
+| Citizen reports | `POST /citizen-reports`, `GET /citizen-reports`, `GET /citizen-reports/:id`, `PATCH /citizen-reports/:id/review` |
+| Traffic Vision | `POST /traffic-vision/jobs`, `GET /traffic-vision/jobs`, `GET /traffic-vision/jobs/:id`, `.../results`, `.../annotated-video`, `.../result-file` |
+
+**Pagination:** the measurement, congestion-event, alert and citizen-report lists accept `page` and `limit` (default limit 50, maximum 100, maximum page 10000). Invalid values return `400` with code `INVALID_PAGINATION`.
+
+**Error conventions:** `401` for a missing or invalid token (the frontend then signs the user out), `403` for a valid token without permission, `409` for state conflicts (for example `PRIORITY_ALREADY_ACTIVE`, `PRIORITY_NOT_ACTIVE`, `EMERGENCY_OVERRIDE_ACTIVE`).
+
+**Real-time events** (Socket.IO, JWT sent in the handshake, all authenticated users): `measurement-created`, `congestion-detected`, `congestion-cleared`, `alert-created`, `alert-resolved`, and `traffic-vision:status` for job updates. REST remains the source of truth if the socket is disconnected.
+
+### Route recommendation behaviour
+
+A route may carry an ordered list of `waypoints` (existing traffic locations). Live ranking is used **only when every candidate route has waypoints and fresh measurements (default window 45 s, last 24 h considered) at all of them**. In that case the worst fresh level along a route is used. In every other case (no waypoints, stale or missing data, partial coverage) the response uses `STATIC_ROUTE_DATA`: the stored `trafficLevel` and `estimatedTime` of each route, and the UI shows "Static route data — not live traffic". The seeded test routes have no waypoints, so a fresh checkout shows the static fallback. `PATCH /routes/:id/waypoints` (Admin/Authority) validates and sets the list (maximum 25, no duplicates, locations must exist; an empty list removes it).
+
+## Traffic Vision workflow
+
+Traffic Vision analyses **recorded video files**. It is not a live camera pipeline.
+
+1. **Upload**: the UI (or `POST /api/traffic-vision/jobs`) sends the raw video as the request body with the headers `X-File-Name` and a video `Content-Type`; optional query flags `tracking` (default `true`) and `annotatedVideo` (default `false`); optional `Idempotency-Key` header. Accepted extensions: `.mp4`, `.mov`, `.avi`, `.mkv`, `.webm`, validated by extension, MIME type and file signature; maximum size 500 MB by default.
+2. **Queue**: a job document is created (`QUEUED`) and the file is stored under the CV data directory. If the queue is full the request is rejected.
+3. **Process**: the backend worker claims a job with a lease and heartbeat (`PROCESSING`) and runs `python -m traffic_vision.cli` from `ai-service/` with the configured weights. Failed or interrupted attempts are re-queued up to 8 attempts, after which the job is `FAILED`.
+4. **Result**: the CLI writes a JSON file. On success the job becomes `COMPLETED` and stores metrics: detection events per class, frames processed, average detections per frame, processing time and FPS, and, with tracking, the number of distinct tracker IDs and active tracks. Lane-flow counting is only produced when a counting line is supplied to the CLI; the web upload does not supply one, so flow metrics are empty for UI jobs.
+5. **View**: status updates arrive over Socket.IO (with a REST fallback for clients that connect late). The UI shows job history, metrics, optional annotated video and a JSON download.
+
+Files expire after `STM_CV_RETENTION_DAYS`. **Detection events are not unique vehicles**, and tracker IDs are estimates. Results do not provide speed, density or road occupancy and are deliberately **not written as `TrafficMeasurement` records**. For CLI flags and metric definitions see [`ai-service/README.md`](ai-service/README.md).
+
+Run the CLI directly (from `ai-service/`, with its virtual environment active):
+
+```bash
+python -m traffic_vision.cli --input path/to/video.mp4 --weights path/to/yolo.pt --output result.json --tracking
+```
+
+## Traffic data processing and the development simulator
+
+- Each saved measurement is queued for durable processing (`PENDING` → `PROCESSING` → `COMPLETED`, with `RETRY` and a terminal `FAILED` after eight attempts, exponential backoff and per-location leases). A recovery worker resumes unfinished work after a restart. This internal state is not exposed through an API.
+- At startup the backend checks for duplicate *active* congestion events or alerts before creating the unique indexes. If duplicates exist it logs them and **stops without changing any records**; `backend/scripts/migrate-congestion-lifecycle.js` is the operator-reviewed migration (dry run by default; `--apply` writes).
+- **Simulator (development only, disabled by default):** generates measurements labelled `source: "SIMULATOR"` for existing active sensors, using scenarios `normal`, `rush-hour`, `heavy-congestion`, `incident` and `recovery`. It writes to the database, so it needs `NODE_ENV=development`, `STM_TRAFFIC_SIMULATOR_ENABLED=YES`, `STM_TEST_DATA_CONFIRM=YES`, a test database name, and a URI that matches it. It cannot tell whether a host is production, so only point it at a test cluster. Simulated data is not live traffic, and with the simulator off the stored data keeps ageing.
+
+## Testing and verification
+
+| Suite | Command (working directory) | Type | Needs |
+|---|---|---|---|
+| Backend | `npm test` (`backend/`) | Unit and mocked/in-process tests via `node --test`; they are not evidence of live database, browser or worker behaviour | Node. The one real-database suite is skipped unless enabled (below). |
+| Backend real-database integration | `node --test tests/trafficMeasurementProcessing.integration.test.js` (`backend/`) | **Writes to MongoDB** | Opt-in: `STM_RUN_TRAFFIC_PROCESSING_INTEGRATION=YES`, `STM_TEST_DATA_CONFIRM=YES`, `NODE_ENV=development`, and a dedicated, empty test database whose name contains `test` (for example `stm_congestion_it_test`) set in `STM_TEST_DATABASE_NAME`. Do not use the shared `stm_test` database. |
+| Frontend lint | `npm run lint` (`frontend/`) | Static analysis | Node |
+| Frontend build | `npm run build` (`frontend/`) | Compile check | Node |
+| Frontend utilities | `node --test src/utils/*.test.js` (`frontend/`) | Unit | Node |
+| AI service | `python -m unittest discover -s tests -v` (`ai-service/`) | Unit with synthetic detections | Python and the installed requirements; no weights, network or GPU |
+
+There is no browser/component test framework. Browser and end-to-end checks of the pages, Emergency Priority and Traffic Vision were done manually against the development database; they are not automated and the results are not recorded in the repository.
+
+## Database and test-data safety
+
+- The backend connects with an explicit `dbName`. Unless `NODE_ENV=production`, that name is `STM_TEST_DATABASE_NAME` or, if unset, **`stm_test`**, and it must contain `test` or startup fails. Consequently a database name written in `MONGO_URI` does not select the database in development; the explicit name does. With `NODE_ENV=production` and no `STM_TEST_DATABASE_NAME`, the URI's own database is used and this guard does not apply.
+- The code can verify a database *name* but cannot tell whether a host is production. Use a dedicated test cluster.
+- Commands that **write to the database**:
+
+| Command | Effect | Guards |
+|---|---|---|
+| `npm run seed:test-accounts` | Creates or verifies one account per role | `NODE_ENV=development`, `STM_TEST_ACCOUNTS_CONFIRM=YES`, `STM_TEST_ACCOUNT_PASSWORD` (set at run time, never stored), matching test database name |
+| `npm run seed:test-data` | Idempotently creates or updates sample locations, signals, devices, measurements, events, routes, vehicles, alerts and reports; does not delete or drop | `NODE_ENV=development`, `STM_TEST_DATABASE_NAME`, `STM_TEST_DATA_CONFIRM=YES`; the test accounts must already exist |
+| `node scripts/migrate-congestion-lifecycle.js --apply` | Reconciles duplicate active congestion events/alerts | Refuses `NODE_ENV=production`; dry run without `--apply` |
+| Backend with the simulator enabled | Inserts simulated measurements and the events/alerts they trigger | See the simulator section |
+| Real-database integration suite | Creates and removes its own fixtures | See Testing |
+| Normal application use | Every `POST`/`PATCH` in the API, including Traffic Vision uploads | Role checks |
+
+Example (PowerShell, from `backend/`):
 
 ```powershell
 $env:NODE_ENV = "development"
@@ -304,155 +352,51 @@ npm run seed:test-data
 Remove-Item Env:STM_TEST_DATA_CONFIRM
 ```
 
-It idempotently creates or updates the seed-owned locations, signals, monitoring devices, measurements, congestion events, routes, emergency vehicles, alerts, and two citizen reports. Repeated runs preserve operational state such as signal timing, emergency-priority activation, resolved alerts/events, and report review status. It does not delete records or drop/reset collections.
+## Known limitations and future work
 
-### Traffic-Processing MongoDB Integration Tests
+**Implemented but limited**
 
-The opt-in traffic-processing integration suite can use a dedicated test database name instead of the shared `stm_test`. The configured name must be a valid MongoDB database name containing `test` as a segment (for example, `stm_congestion_it_test`) and must not contain a `prod`, `production`, `live`, or `staging` segment. If `MONGO_URI` includes a database path, that path must exactly match `STM_TEST_DATABASE_NAME`; when it has no database path, Mongoose selects the configured name explicitly.
+- **No live data sources.** Measurements are API-submitted, seeded or simulated. There are no sensor, GPS or CCTV integrations, and no real-time map.
+- **Data staleness.** Dashboard counts and "active" events reflect whatever is stored. The "Live updates connected" label means the socket is connected, and the "Traffic Network Active" badge in the top bar is a static label; neither means the data is current.
+- **Route ranking is live only with waypoints plus fresh data.** Otherwise it is static and labelled. Live ranking has not been exercised against real route-waypoint mappings in this project.
+- **Signal optimization is rule-based** (fixed thresholds), and there is no prediction or forecasting.
+- **Emergency priority** swaps one signal at the vehicle's current location to `NORTH_SOUTH` / 60 s and restores it; there is no multi-signal green corridor. A vehicle left active before the override-state feature existed (no saved state) is handled by a fallback that keeps the phase and resets green time to the schema default. That fallback path is covered by mocked tests only.
+- **Traffic Vision** handles recorded video only, uses a general-purpose YOLO checkpoint without camera calibration, produces no speed or density, and its results do not feed the traffic measurements or alerts. Job processing was exercised end to end on one short sample video in development; accuracy on real footage has not been evaluated.
+- **Authorization nuance:** Traffic Vision endpoints require only authentication (non-staff are limited to their own jobs).
+- A page reload ends the session by design; there is no token refresh.
+- No Docker, CI or deployment configuration is included, and `.github/` holds only an assistant-instructions file.
 
-Before running the suite, provision a separate, empty test database on the intended non-production MongoDB cluster. Do not use the existing `stm_test` database: its historical active congestion events conflict with the lifecycle uniqueness preflight. The test runner verifies the connected database name before creating lifecycle indexes or running any test writes. It preserves the preflight and stops without changing records if conflicting active events or alerts already exist. The suite does not seed data or migrate existing records; its own fixtures use unique identifiers and are cleaned up by the tests.
+**Not implemented (ideas, not commitments)**: traffic prediction, live camera streams, IoT/sensor integration, external traffic-data feeds, multi-signal green corridors, richer route optimization.
 
-Provision/verify the dedicated database on a non-production cluster first. From `backend/` in PowerShell, set `MONGO_URI` to that cluster (for example, for a local MongoDB instance use `mongodb://127.0.0.1:27017/stm_congestion_it_test`; for a remote cluster use its dedicated test URI with the matching database path, or no path). Ensure `JWT_SECRET` is configured, then run:
+## Demo workflow
 
-```powershell
-$env:MONGO_URI = "mongodb://127.0.0.1:27017/stm_congestion_it_test"
-$env:NODE_ENV = "development"
-$env:STM_TEST_DATABASE_NAME = "stm_congestion_it_test"
-$env:STM_TEST_DATA_CONFIRM = "YES"
-$env:STM_RUN_TRAFFIC_PROCESSING_INTEGRATION = "YES"
-node --test tests/trafficMeasurementProcessing.integration.test.js
-Remove-Item Env:STM_RUN_TRAFFIC_PROCESSING_INTEGRATION, Env:STM_TEST_DATA_CONFIRM
-```
+No screenshots are included in the repository. A suggested walkthrough against a seeded test database:
 
-The integration opt-in and confirmation are both required. The worker processes used by the cross-process concurrency test inherit the same guarded environment, validate it independently, connect to that same configured database, and verify the connected database name before processing.
+1. Sign in as a staff user. Review the Dashboard and Traffic Monitoring (paginated measurements and events).
+2. Open the "Video AI Analysis" tab to show a completed Traffic Vision job's metrics and history (uploading a new video takes tens of seconds and needs the AI service configured).
+3. Show Alerts & Analytics and Citizen Reporting.
+4. Run Route Recommendation and point out the "Static route data — not live traffic" label.
+5. Optionally show Signal Optimization and Emergency Priority. Activating priority changes the stored signal until it is deactivated.
+6. Navigate with the sidebar; a full page reload signs you out.
 
-### Development Traffic Simulator
+## Troubleshooting
 
-The backend includes an opt-in traffic simulator for development. It generates clearly labeled simulated measurements using the same ingestion, congestion-detection, and alert-processing pipeline as submitted measurements. Simulator measurements have `source: "SIMULATOR"`; measurements submitted through the existing API default to `source: "API"` (this source label does not assert that data is verified live traffic). The simulator uses existing active traffic locations and `TRAFFIC_SENSOR` devices; it does not create locations/devices or modify existing measurements. New simulated measurements are retained when the process stops.
+| Symptom | Likely cause and action |
+|---|---|
+| Backend exits with "MONGO_URI environment variable is missing or empty" | Set `MONGO_URI` in `backend/.env`. |
+| "STM_TEST_DATABASE_NAME must contain 'test'" | Rename the variable's value or unset it (development defaults to `stm_test`). |
+| MongoDB TLS "alert 80", server selection timeout or authentication failure | The startup log prints a diagnostic: check Atlas Network Access (IP allow-list), network/firewall on port 27017, and credentials. |
+| Startup stops after logging duplicate active congestion events/alerts | Existing data conflicts with the unique-index preflight. Nothing was changed; review and use the migration script (dry run first). |
+| Every request returns 401 | `JWT_SECRET` missing or changed since the token was issued, or the token expired (1 day). Sign in again. |
+| Frontend loads but API calls fail | Backend not running on the URL in `VITE_API_BASE_URL` (default `http://localhost:5000/api`). Check `GET /api/health`. |
+| Signed out after refreshing | Expected: the session is not persisted across a full page load. |
+| Dashboard shows old "active" events | The data is old and no simulator or feed is running. |
+| Traffic Vision job fails or never starts | Check `STM_CV_PYTHON` points to an interpreter with the requirements installed, `STM_CV_MODEL_PATH` points to existing weights, the backend console for the subprocess error, and that the file type and size are within limits. Run the CLI by hand to isolate the problem. |
+| Signal optimization returns 409 `EMERGENCY_OVERRIDE_ACTIVE` | The signal has an active emergency override; deactivate the priority first. |
 
-The simulator is disabled by default. From `backend/` in PowerShell, configure a development database before opting in:
+## Development notes and license
 
-```powershell
-$env:NODE_ENV = "development"
-$env:MONGO_URI = "mongodb://127.0.0.1:27017/stm_test"
-$env:STM_TEST_DATABASE_NAME = "stm_test"
-$env:STM_TEST_DATA_CONFIRM = "YES"
-$env:STM_TRAFFIC_SIMULATOR_ENABLED = "YES"
-$env:STM_TRAFFIC_SIMULATOR_INTERVAL_MS = "15000"
-$env:STM_TRAFFIC_SIMULATOR_DEVICE_COUNT = "3"
-$env:STM_TRAFFIC_SIMULATOR_SCENARIO = "rush-hour"
-$env:STM_TRAFFIC_SIMULATOR_SEED = "12345"
-npm run dev
-```
-
-Only `NODE_ENV=development` and `STM_TRAFFIC_SIMULATOR_ENABLED=YES` enable it. Before writing, the simulator also requires `STM_TEST_DATA_CONFIRM=YES`, a safe test database name in `STM_TEST_DATABASE_NAME`, a valid MongoDB URI whose optional database path matches that name, and a connected database with the same name. Use a dedicated test cluster; the application can verify the database name but cannot independently identify whether a MongoDB host is production. The optional interval must be at least 1000 ms, device count must be 1–20, and the selected sensors must already belong to active locations. Select one scenario with `STM_TRAFFIC_SIMULATOR_SCENARIO`: `normal`, `rush-hour`, `heavy-congestion`, `incident`, or `recovery`. Rush-hour and congestion scenarios build progressively; recovery starts congested and clears progressively. Select a numeric seed for reproducible road-to-road variation. The simulator starts automatically with the backend when enabled and stops with normal backend shutdown; restart the backend to change scenarios. No public start/stop endpoint exists, and simulated measurement history is retained. This is generated test data, not a live traffic feed.
-
-### Real-Time Dashboard Updates
-
-The backend Socket.IO connection uses the existing `HS256` JWT session: the frontend sends its current token in the Socket.IO authentication handshake, not in the URL. Connections with missing, invalid, or unknown-role tokens are rejected. Authenticated users receive measurement, congestion, and alert lifecycle notifications, matching the authenticated read access of the existing traffic and alert APIs. Payloads contain only traffic/event identifiers and operational fields, not credentials or user profile data. Traffic Monitoring and Alerts & Analytics continue to load through REST first and refresh those feeds when notifications arrive; REST remains available when the socket is disconnected.
-
-Congestion episodes are tracked per location. A `HIGH` or `SEVERE` measurement creates an event and alert only when no active episode exists at that location. Further high/severe readings reuse the active event. A `LOW` or `MEDIUM` reading clears all active events at that location and resolves their active alerts with the same `resolvedAt` timestamp. A later high/severe reading starts a new episode. These transitions emit `congestion-detected`, `alert-created`, `congestion-cleared`, and `alert-resolved` only after the corresponding document saves succeed. Processing is serialized per location and per alert event within one backend process. MongoDB partial unique indexes enforce at most one active congestion event per location and one active congestion alert per congestion event across backend processes; duplicate-key races return the winning record without publishing a second creation notification.
-
-The two lifecycle indexes are created explicitly during backend startup after a read-only scan for conflicting active records. Mongoose automatic index creation is disabled for these models so an index cannot be built before the conflict scan. If existing duplicates are found, startup logs the affected location/event IDs and sample record IDs, creates neither index, and stops; it does not delete, resolve, or overwrite records. Review and reconcile such records through an explicit operator-reviewed data migration before restarting.
-
-These unique indexes require the congestion-event and traffic-alert collections to be unsharded, or for the deployment's shard keys to be compatible with MongoDB's unique-index requirements. If MongoDB rejects index creation, startup fails closed and logs the error; verify the collection sharding/index constraints before allowing traffic processing.
-
-### Durable Traffic-Measurement Processing Recovery
-
-Each newly persisted measurement is created with internal processing state `PENDING`; older measurements without this metadata are not automatically reprocessed. The initial processing attempt still runs synchronously after measurement persistence, and the API keeps its existing success response for a saved measurement even when processing fails. Internal queue metadata is omitted from normal measurement API serialization.
-
-The durable states are `PENDING` → `PROCESSING` → `COMPLETED`, with failures moving through `RETRY` back to `PROCESSING`, or to retained terminal `FAILED` after eight attempts. A job records its attempt count, next retry time, lease token/expiry, last completed stage, event/alert references, and a bounded error summary. Retries use exponential backoff starting at one second, capped at five minutes, with jitter. A periodic worker claims bounded batches using MongoDB updates. Expired processing leases are eligible for recovery after restart. The worker creates the processing-queue index only after the database connection and congestion lifecycle index preflight succeed.
-
-Measurements are ordered by persistence timestamp and ID within each location. A durable per-location lease serializes work across backend processes; a future-due retry at the head of a location's queue blocks newer measurements at that location, while other locations can continue. Processing checkpoints allow recovery after event or alert persistence without intentionally creating a second active event/alert. Existing partial unique indexes and duplicate-key winner handling remain the final cross-process safeguards. On graceful shutdown the worker stops polling and drains active operations; after an abrupt process exit, recovery waits for the lease to expire.
-
-Operational state is retained on the measurement documents but is not currently exposed through a management API or dashboard. Operators can inspect the `processing.status`, `processing.attempts`, `processing.nextAttemptAt`, and `processing.lastError` fields using approved database access. `FAILED` jobs are retained for investigation; there is no automatic or public replay endpoint. Socket.IO remains best-effort: a process crash after a persisted lifecycle change but before publication can still result in a missed live notification, although REST reads reflect the stored state. Lease expiry also has the usual distributed-worker limitation if a worker becomes unresponsive beyond its lease while still executing; the heartbeat reduces but does not eliminate that risk.
-
-### Frontend Setup
-
-Open another terminal:
-
-```bash
-cd frontend
-npm install
-npm run dev
-```
-
-The frontend will then be available through the local Vite development server.
-
----
-
-## Database
-
-The backend uses **MySQL** for persistent storage.
-
-The database contains entities for areas such as:
-
-- Users
-- Traffic Signals
-- Traffic Locations
-- Traffic Measurements
-- Traffic Alerts
-- Traffic Incidents
-- Emergency Vehicles
-- Monitoring Devices
-- Routes
-- Congestion Events
-
-Database configuration is maintained in:
-
-```text
-backend/config/database.js
-```
-### Computer Vision Integration — Work in Progress
-
-**Phase 1 — Offline CV pipeline:** Implemented and unit-tested. Real-world inference remains unverified.
-
-**Phase 3 — STM backend integration: INCOMPLETE**
-- Upload, job, analysis, and worker service foundations exist.
-- API controllers/routes are not yet implemented and registered.
-- Realtime progress updates are not integrated.
-- Worker startup/shutdown is not wired into the server lifecycle.
-- Integration with standard `TrafficMeasurement` records is not implemented.
-- End-to-end processing, authorization, and recovery remain to be verified.
-
-**Phase 4 — Frontend interface: NOT IMPLEMENTED**
-- Video upload interface, processing status, metrics display, annotated-video playback, and result downloads remain pending.
-
-This checkpoint preserves ongoing development work. Phases 3 and 4 must not be represented as completed or production-ready.
-
----
-
-## Future Development
-
-Planned extensions include:
-
-- AI-based traffic prediction
-- Computer-vision-based incident detection
-- IoT sensor integration
-- Traffic simulation
-- Advanced predictive analytics
-- Real-time map visualization
-- More sophisticated route optimization
-- Integration with external traffic data sources
-
----
-
-## Project Status
-
-**Status:** Active Development
-
-The current implementation focuses on the core frontend and backend architecture, traffic management modules, APIs, database integration, and intelligent traffic-management services.
-
-AI and simulation components are planned for subsequent development.
-
----
-
-## Contributors
-
-Developed as part of a Software Engineering project.
-
----
-
-## License
-
-This project is currently intended for academic and educational purposes.
+- Before committing, run the backend tests, `npm run lint` and `npm run build` in `frontend/`, and the AI service tests if you changed it.
+- Do not commit `.env` files, virtual environments, model weights, videos, `ai-service/test-assets/` or `backend/backups/`; they are git-ignored.
+- Backend structure: route → controller → service → model; new endpoints should add a test in `backend/tests/`.
+- Developed as a Software Engineering course project. The repository contains no license file; it is intended for academic and educational use.
